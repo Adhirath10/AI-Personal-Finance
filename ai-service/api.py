@@ -333,24 +333,27 @@ def anomalies(
                 "analysis_period": analysis["analysis_period"],
                 "items": [],
             }
-        # Most unusual first: higher scores are further from the user's normal pattern.
-        items = sorted(
-            (
-                {**item, "review_status": "Needs review"}
-                for item in result.get("transactions", [])
-            ),
-            key=lambda item: item.get("anomaly_score") or 0.0,
-            reverse=True,
-        )
+        # Already ordered by severity, then by how many checks matched.
+        items = [
+            {**item, "review_status": "Needs review"}
+            for item in result.get("transactions", [])
+        ]
         analyzed_count = int(result.get("analyzed_count", 0))
+        counts = result.get("severity_counts") or {"High": 0, "Medium": 0, "Low": 0}
+        important = counts.get("High", 0) + counts.get("Medium", 0)
         return {
             "status": result.get("status", "unavailable"),
             "analysis_period": analysis["analysis_period"],
+            "scope_month": result.get("scope_month"),
             "training_end": result.get("training_end"),
             "total_analyzed": analyzed_count,
             "normal_count": max(0, analyzed_count - len(items)),
-            "anomaly_count": len(items),
-            "alert_rate": len(items) / analyzed_count if analyzed_count else None,
+            "anomaly_count": important,
+            "flagged_count": len(items),
+            "severity_counts": counts,
+            "model_flag_count": result.get("model_flag_count"),
+            "typical_monthly_income": result.get("typical_monthly_income"),
+            "alert_rate": important / analyzed_count if analyzed_count else None,
             "items": items,
             "notice": "Unusual transactions are statistical outliers requiring review, not confirmed fraud.",
         }

@@ -229,6 +229,136 @@ def load_user_financial_data(
     return result
 
 
+def _inr(amount: float) -> str:
+    """Format rupees with Indian digit grouping, e.g. 125000 -> ₹1,25,000."""
+    whole = str(int(round(abs(amount))))
+    if len(whole) > 3:
+        head, tail = whole[:-3], whole[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        whole = ",".join(groups + [tail])
+    return ("-" if amount < 0 else "") + "₹" + whole
+
+
+def _typical_monthly_income(
+    rows: pd.DataFrame, kinds: pd.Series, period: pd.Period | None
+) -> float | None:
+    """Median monthly income over the six recorded months up to the period."""
+    income = rows.loc[kinds.eq("income")]
+    if income.empty:
+        return None
+    monthly = income.groupby(income["transaction_date"].dt.to_period("M"))["amount"].sum()
+    if period is not None:
+        monthly = monthly[monthly.index <= period]
+    monthly = monthly.tail(6)
+    value = float(monthly.median()) if not monthly.empty else None
+    return value if value and value > 0 else None
+
+
+# Transparent checks against the user's own earlier expenses.
+LARGE_PURCHASE_RATIO = 3.0  # this many times the usual purchase in the category
+VERY_LARGE_PURCHASE_RATIO = 5.0
+EXTREME_PURCHASE_RATIO = 8.0
+DUPLICATE_WINDOW_DAYS = 3
+MIN_CATEGORY_HISTORY = 5
+MIN_MERCHANT_HISTORY = 20
+
+
+def _assess_expense(
+    row: pd.Series,
+    index: Any,
+    expense_rows: pd.DataFrame,
+    typical_income: float | None,
+    model_flag: bool,
+    score: float,
+) -> dict[str, Any] | None:
+    """Return severity and plain-language reasons for an unusual expense, or None."""
+    amount = float(row["amount"])
+    when = row["transaction_date"]
+    category = _clean_category(row["category"]) or "this category"
+    merchant = str(row["merchant"]).strip() if pd.notna(row["merchant"]) else ""
+    position = expense_rows.index.get_loc(index)
+    prior = expense_rows.iloc[:position]
+    prior = prior.loc[prior["transaction_date"] <= when]
+
+    reasons: list[str] = []
+    signals: list[str] = []
+    points = 0
+
+    same_category = prior.loc[prior["category"].map(_clean_category) == _clean_category(row["category"]), "amount"]
+    usual = float(same_category.median()) if len(same_category) >= MIN_CATEGORY_HISTORY else None
+    ratio = amount / usual if usual else None
+    if ratio is not None and ratio >= LARGE_PURCHASE_RATIO:
+        points += 4 if ratio >= EXTREME_PURCHASE_RATIO else 3 if ratio >= VERY_LARGE_PURCHASE_RATIO else 2
+        signals.append("large_for_category")
+        reasons.append(
+            f"{_inr(amount)} is {ratio:.1f}× your usual {category} purchase ({_inr(usual)})."
+        )
+
+    window = prior.loc[prior["transaction_date"] >= when - pd.Timedelta(days=DUPLICATE_WINDOW_DAYS)]
+    duplicates = window.loc[
+        window["merchant"].astype(str).str.strip().str.casefold().eq(merchant.casefold())
+        & (window["amount"] - amount).abs().lt(0.01)
+    ]
+    if merchant and not duplicates.empty:
+        points += 3
+        signals.append("possible_duplicate")
+        earlier = duplicates["transaction_date"].iloc[-1]
+        days = (when.normalize() - earlier.normalize()).days
+        reasons.append(
+            f"{merchant} charged the same {_inr(amount)} "
+            + ("earlier the same day" if days == 0 else f"{days} day{'s' if days != 1 else ''} earlier")
+            + ": possible duplicate charge."
+        )
+
+    if typical_income:
+        share = amount / typical_income
+        if share >= 0.25:
+            points += 2
+            signals.append("large_share_of_income")
+            reasons.append(f"Uses {share:.0%} of your typical monthly income.")
+        elif share >= 0.10 and ratio is not None and ratio >= 2:
+            points += 1
+            signals.append("large_share_of_income")
+            reasons.append(f"Uses {share:.0%} of your typical monthly income.")
+
+    known_merchants = set(prior["merchant"].astype(str).str.strip().str.casefold())
+    if merchant and len(prior) >= MIN_MERCHANT_HISTORY and merchant.casefold() not in known_merchants:
+        points += 1
+        signals.append("new_merchant")
+        reasons.append(f"First payment to {merchant}.")
+
+    if model_flag:
+        # The model alone only marks a pattern for review (Low); it raises the
+        # severity when one of the checks above agrees.
+        points += 2 if score >= 0.05 and signals else 1
+        signals.append("model")
+        reasons.append(
+            f"The anomaly model finds this unusual for your {category} spending "
+            f"(timing, amount or frequency; score {score:.3f})."
+        )
+
+    if not model_flag and points < 2:
+        return None
+    severity = "High" if points >= 4 else "Medium" if points >= 2 else "Low"
+    rule_based = [signal for signal in signals if signal != "model"]
+    return {
+        "severity": severity,
+        "risk_points": points,
+        "reasons": reasons,
+        "signals": signals,
+        "usual_category_amount": usual,
+        "amount_ratio": ratio,
+        "detected_by": (
+            "model + rules" if model_flag and rule_based else "model" if model_flag else "rules"
+        ),
+    }
+
+
 class RecommendationEngine:
     """Create personalized recommendations without changing source data or models."""
 
@@ -594,8 +724,18 @@ class RecommendationEngine:
         return artifacts
 
     def _score_potential_anomalies(
-        self, transactions: pd.DataFrame
+        self,
+        transactions: pd.DataFrame,
+        analysis_period: pd.Period | None = None,
     ) -> dict[str, Any]:
+        """Flag unusual expenses in the analysis month and explain why.
+
+        The saved behavioral Isolation Forest scores each out-of-sample expense.
+        Transparent checks against the user's own earlier history (amount
+        versus their usual purchase in the category, first payment to a
+        merchant, share of monthly income, a repeated identical charge) explain
+        the flags, set their severity, and catch clear cases the model misses.
+        """
         artifacts = self._load_anomaly_artifacts()
         if artifacts is None:
             return {"status": "unavailable", "transactions": []}
@@ -620,14 +760,18 @@ class RecommendationEngine:
         rows["transaction_date"] = pd.to_datetime(
             rows["transaction_date"], errors="coerce"
         )
-        out_of_sample = (
-            rows["transaction_date"].gt(training_end)
-            & rows["transaction_type"].astype(str).str.strip().str.casefold().eq("expense")
-        )
+        kinds = rows["transaction_type"].astype(str).str.strip().str.casefold()
+        out_of_sample = rows["transaction_date"].gt(training_end) & kinds.eq("expense")
+        if analysis_period is not None:
+            out_of_sample &= rows["transaction_date"].dt.to_period("M").eq(analysis_period)
+        scope = {
+            "training_end": training_end.date().isoformat(),
+            "scope_month": str(analysis_period) if analysis_period is not None else None,
+        }
         if not out_of_sample.any():
             return {
                 "status": "no_out_of_sample_rows",
-                "training_end": training_end.date().isoformat(),
+                **scope,
                 "analyzed_count": 0,
                 "transactions": [],
             }
@@ -635,7 +779,7 @@ class RecommendationEngine:
         features = prepare_experiment_features(rows)
         candidates = rows.loc[out_of_sample]
         candidate_features = features.loc[candidates.index]
-        predictions: list[dict[str, Any]] = []
+        model_results: dict[Any, tuple[bool, float]] = {}
         for (user_id, transaction_type), indexes in candidates.groupby(
             ["user_id", "transaction_type"], sort=False
         ).groups.items():
@@ -648,26 +792,43 @@ class RecommendationEngine:
             selected = candidate_features.loc[indexes]
             flags = model.predict(selected) == -1
             scores = -model.decision_function(selected)
-            for position, (transaction_id, row) in enumerate(
-                candidates.loc[indexes].iterrows()
-            ):
-                if flags[position]:
-                    predictions.append(
-                        {
-                            "transaction_id": str(row["transaction_id"]),
-                            "transaction_date": row["transaction_date"].date().isoformat(),
-                            "amount": _number(row["amount"]),
-                            "category": _clean_category(row["category"]),
-                            "merchant": str(row["merchant"])
-                            if pd.notna(row["merchant"])
-                            else None,
-                            "anomaly_score": float(scores[position]),
-                        }
-                    )
+            for position, index in enumerate(indexes):
+                model_results[index] = (bool(flags[position]), float(scores[position]))
+
+        typical_income = _typical_monthly_income(rows, kinds, analysis_period)
+        expense_rows = rows.loc[kinds.eq("expense")].sort_values("transaction_date", kind="stable")
+        predictions: list[dict[str, Any]] = []
+        severity_counts = {"High": 0, "Medium": 0, "Low": 0}
+        for index, row in candidates.iterrows():
+            model_flag, score = model_results[index]
+            assessment = _assess_expense(row, index, expense_rows, typical_income, model_flag, score)
+            if assessment is None:
+                continue
+            severity_counts[assessment["severity"]] += 1
+            predictions.append(
+                {
+                    "transaction_id": str(row["transaction_id"]),
+                    "transaction_date": row["transaction_date"].date().isoformat(),
+                    "amount": _number(row["amount"]),
+                    "category": _clean_category(row["category"]),
+                    "merchant": str(row["merchant"]) if pd.notna(row["merchant"]) else None,
+                    "description": str(row["description"]) if pd.notna(row["description"]) else None,
+                    "anomaly_score": score,
+                    "model_flag": model_flag,
+                    **assessment,
+                }
+            )
+        severity_rank = {"High": 0, "Medium": 1, "Low": 2}
+        predictions.sort(
+            key=lambda item: (severity_rank[item["severity"]], -item["risk_points"], -item["anomaly_score"])
+        )
         return {
             "status": "available",
-            "training_end": training_end.date().isoformat(),
+            **scope,
             "analyzed_count": int(out_of_sample.sum()),
+            "model_flag_count": int(sum(flag for flag, _ in model_results.values())),
+            "severity_counts": severity_counts,
+            "typical_monthly_income": typical_income,
             "transactions": predictions,
         }
 
@@ -945,6 +1106,7 @@ class RecommendationEngine:
                 "Anomaly detection",
                 self._score_potential_anomalies,
                 transactions,
+                selected_period,
             )
             anomaly_results.setdefault("transactions", [])
         else:
@@ -1570,24 +1732,47 @@ class RecommendationEngine:
                 if _month(item["transaction_date"]) == current_period
             ]
             if current_month_candidates:
+                severities = [item.get("severity", "Low") for item in current_month_candidates]
+                high = severities.count("High")
+                medium = severities.count("Medium")
+                priority = "High" if high else "Medium" if medium else "Low"
+                important = high + medium
                 recommendations.append(
                     self._recommendation(
                         user_id,
                         f"Review unusual transactions from {month}",
-                        f"The existing Isolation Forest flagged "
-                        f"{len(current_month_candidates)} transaction(s) in {month} "
-                        "for review. These are statistical outliers, not confirmed "
-                        "fraud or verified anomalies.",
+                        (
+                            f"{important} transaction(s) in {month} stand out from your usual "
+                            f"spending ({high} high, {medium} medium severity)"
+                            if important
+                            else f"{len(current_month_candidates)} transaction(s) in {month} follow an unusual pattern"
+                        )
+                        + ". Check them on the Anomaly detection page; they are not "
+                        "confirmed fraud.",
                         "unusual_transaction_review",
-                        "Medium",
-                        "The saved behavioral Isolation Forest flagged these "
-                        "out-of-sample transactions relative to its fitted feature "
-                        "distribution. Stored anomaly labels are not used.",
+                        priority,
+                        "Flags combine the saved behavioral Isolation Forest with checks "
+                        "against your own earlier spending: amount versus your usual "
+                        "purchase in the category, first payments to a merchant, share of "
+                        "monthly income and repeated identical charges. Stored anomaly "
+                        "labels are not used.",
                         {
                             "month": month,
                             "model_training_end": anomaly_data.get("training_end"),
                             "flagged_transaction_count": len(current_month_candidates),
-                            "transactions": current_month_candidates,
+                            "high_severity_count": high,
+                            "medium_severity_count": medium,
+                            "transactions": [
+                                {
+                                    key: item[key]
+                                    for key in (
+                                        "transaction_id", "transaction_date", "amount",
+                                        "category", "merchant", "anomaly_score", "severity",
+                                    )
+                                    if key in item
+                                }
+                                for item in current_month_candidates
+                            ],
                             "label_provenance": "unverified",
                         },
                     )
