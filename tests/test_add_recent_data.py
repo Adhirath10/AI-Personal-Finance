@@ -112,3 +112,16 @@ def test_generated_months_look_like_a_real_household_budget(tmp_path):
         "SELECT amount FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND description = 'Netflix'"
     )} == {649}
     assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE merchant = 'Croma' AND transaction_date LIKE '2026-11%'") == 1
+
+
+def test_a_test_transaction_in_a_later_month_does_not_block_the_gap(tmp_path):
+    connection = _database(tmp_path / "finance.db")
+    connection.execute(
+        "INSERT INTO transactions VALUES ('TXN-TEST', 'U001', '2026-11-17', 'Tea', 'Chai Point', 523, "
+        "'Expense', 'Food', 'Other', 'UPI', 'Savings', 0, 0, NULL, 900, 1, 11, 2026)"
+    )
+
+    summary = add_recent.add_recent_data(connection, "U001", date(2026, 10, 31))
+
+    assert summary["months"][0] == "2026-01" and summary["months"][-1] == "2026-10"
+    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_id = 'TXN-TEST'") == 1

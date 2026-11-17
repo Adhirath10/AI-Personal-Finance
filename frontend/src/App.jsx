@@ -60,6 +60,25 @@ function overviewFields(result) {
   };
 }
 
+const MONTH_KEY = "finai-selected-month";
+
+function readSelectedMonth() {
+  try {
+    return localStorage.getItem(MONTH_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSelectedMonth(month) {
+  try {
+    if (month) localStorage.setItem(MONTH_KEY, month);
+    else localStorage.removeItem(MONTH_KEY);
+  } catch {
+    // Browser storage unavailable: the choice lasts for this visit only.
+  }
+}
+
 // Dashboard resources that follow the month picker.
 function periodParams(name, month) {
   return month && (name === "overview" || name === "budgets") ? { month } : {};
@@ -100,8 +119,9 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState(null);
   const [toastKind, setToastKind] = useState("success");
-  const [selectedMonth, setSelectedMonth] = useState(null);
-  const selectedMonthRef = useRef(null);
+  // The month picked in the top bar is remembered across reloads.
+  const [selectedMonth, setSelectedMonth] = useState(readSelectedMonth);
+  const selectedMonthRef = useRef(selectedMonth);
   const [settings, setSettings] = useState(readSettings);
   const [helpOpen, setHelpOpen] = useState(false);
   const location = useLocation();
@@ -287,6 +307,7 @@ export default function App() {
     if (next === selectedMonthRef.current) return;
     selectedMonthRef.current = next;
     setSelectedMonth(next);
+    storeSelectedMonth(next);
     setData((current) => ({ ...current, ...monthScopedResults }));
     try {
       const [result, budgets] = await Promise.all([
@@ -311,6 +332,12 @@ export default function App() {
       }));
     }
   }, []);
+
+  // Forget a remembered month that no longer has data (e.g. after removing generated rows).
+  useEffect(() => {
+    const items = data.periods?.items;
+    if (selectedMonth && items && !items.some((item) => item.month === selectedMonth)) changeMonth(null);
+  }, [data.periods, selectedMonth, changeMonth]);
 
   const saveResource = useCallback(async (resource, payload, id) => {
     if (resource === "settings") {

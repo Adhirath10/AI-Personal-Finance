@@ -255,7 +255,21 @@ def add_recent_data(
         totals = income_by_month if _kind(row) == "income" else expense_by_month if _kind(row) == "expense" else None
         if totals is not None:
             totals[key] = totals.get(key, 0.0) + float(row["amount"])
-    expense_months = sorted(expense_by_month)
+    # Months with a full record of spending. A month holding only a few entries
+    # (for example a test transaction added in the app) is not part of the
+    # imported history: it must not stop the gap before it from being filled,
+    # nor serve as a template.
+    expense_counts: dict[str, int] = {}
+    for row in expenses:
+        key = str(row["transaction_date"])[:7]
+        expense_counts[key] = expense_counts.get(key, 0) + 1
+    usual_count = _median([float(count) for count in expense_counts.values()]) or 0.0
+    expense_months = sorted(
+        month for month, count in expense_counts.items() if count >= max(2, 0.4 * usual_count)
+    ) or sorted(expense_counts)
+    history = set(expense_months)
+    income_by_month_history = {month: value for month, value in income_by_month.items() if month in history}
+    expense_by_month = {month: value for month, value in expense_by_month.items() if month in history}
 
     first_new = _add_months(_month_start(_parse_date(expense_months[-1] + "-01")), 1)
     last_new = _month_start(through)
@@ -265,7 +279,7 @@ def add_recent_data(
     # The household plan: the user's usual income, and a realistic share of it spent.
     typical_expense = _median(list(expense_by_month.values())) or 0.0
     base_income = max(
-        [value for value in (_median(list(income_by_month.values())), _profile_income(connection, user_id)) if value]
+        [value for value in (_median(list(income_by_month_history.values())), _profile_income(connection, user_id)) if value]
         or [typical_expense / 0.7]
     )
     if savings_rate is not None:
@@ -273,7 +287,10 @@ def add_recent_data(
     else:
         spending_share = min(max(typical_expense / base_income, MIN_SPENDING_SHARE), MAX_SPENDING_SHARE)
 
-    income_rows = [row for row in transactions if _kind(row) == "income"]
+    income_rows = [
+        row for row in transactions
+        if _kind(row) == "income" and str(row["transaction_date"])[:7] in history
+    ] or [row for row in transactions if _kind(row) == "income"]
     if income_rows:
         latest_income_month = max(str(row["transaction_date"])[:7] for row in income_rows)
         salary_template = dict(max(
@@ -318,7 +335,9 @@ def add_recent_data(
         )
         month = _add_months(month, 1)
 
-    balance = float(transactions[-1].get("balance_after_transaction") or 0.0)
+    # Continue the running balance from the last transaction before the new months.
+    before = [row for row in transactions if str(row["transaction_date"])[:7] < _month_key(first_new)]
+    balance = float((before or transactions)[-1].get("balance_after_transaction") or 0.0)
     summary = {"months": list(plan), "transactions": 0, "budgets": 0, "totals": {}}
     category_spend: dict[str, list[float]] = {}
     for key, planned in plan.items():
@@ -487,8 +506,21 @@ def main(argv=None) -> int:
     print()
     with sqlite3.connect(database) as connection:
         latest, latest_expense, generated, _ = _latest(connection, args.user_id)
-    print(f"Check: latest expense for {args.user_id} is now {latest_expense} ({generated} generated rows).")
-    print("Refresh the browser (Ctrl+Shift+R); the month button should show the new latest month.")
+    print(f"Check: {args.user_id} now has {generated} generated rows, {summary['months'][0]} to {summary['months'][-1]}.")
+    with sqlite3.connect(database) as connection:
+        newer = connection.execute(
+            "SELECT substr(transaction_date, 1, 7), COUNT(*) FROM transactions "
+            "WHERE user_id = ? AND transaction_id NOT LIKE ? AND lower(transaction_type) = 'expense' "
+            "AND transaction_date > ? GROUP BY 1 ORDER BY 1 DESC LIMIT 1",
+            (args.user_id, f"{DEMO_PREFIX}%", through.isoformat()),
+        ).fetchone()
+    if newer:
+        print(
+            f"Note: {newer[0]} has {newer[1]} expense(s) you entered, so the dashboard opens on that month. "
+            f"To show a full month, pick {summary['months'][-1]} in the month button at the top (it is remembered), "
+            "or delete the test transaction."
+        )
+    print("Restart the backend and AI service, then refresh the browser (Ctrl+Shift+R).")
     print(f"To undo: python scripts/add_recent_data.py --user-id {args.user_id} --remove")
     return 0
 
