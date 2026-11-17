@@ -10,10 +10,14 @@ Safety:
   * Re-running replaces the previously generated DEMO- rows (it never duplicates).
   * ``--remove`` deletes all generated DEMO- rows for the user.
 
+By default it uses the same database and user as the app (DATABASE_PATH and
+FINANCE_USER_ID from the environment or the project's .env file).
+
 Examples (run from the project root):
-  python scripts/add_recent_data.py --user-id U001
+  python scripts/add_recent_data.py --status
+  python scripts/add_recent_data.py
   python scripts/add_recent_data.py --user-id U001 --through 2026-11-17
-  python scripts/add_recent_data.py --user-id U001 --remove
+  python scripts/add_recent_data.py --remove
 """
 
 from __future__ import annotations
@@ -35,17 +39,32 @@ EXPENSE_GROWTH_PER_YEAR = 1.05
 INCOME_GROWTH_PER_YEAR = 1.06
 
 
+def _app_setting(name: str) -> str | None:
+    """Read a setting the way the backend does: environment first, then .env (any case)."""
+    for key, value in os.environ.items():
+        if key.upper() == name and value.strip():
+            return value.strip()
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, raw = line.partition("=")
+            key = key.strip()
+            if key.lower().startswith("export "):
+                key = key[7:].strip()
+            value = raw.split(" #", 1)[0].strip().strip('"').strip("'")
+            if key.upper() == name and value:
+                return value
+    return None
+
+
 def _database_path(value: str | None) -> Path:
     if value:
         path = Path(value).expanduser()
     else:
-        env_file = PROJECT_ROOT / ".env"
-        configured = os.environ.get("DATABASE_PATH")
-        if configured is None and env_file.is_file():
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                key, _, raw = line.partition("=")
-                if key.strip() == "DATABASE_PATH" and raw.strip():
-                    configured = raw.strip().strip('"').strip("'")
+        configured = _app_setting("DATABASE_PATH")
         path = Path(configured).expanduser() if configured else DEFAULT_DATABASE
     if not path.is_absolute():
         path = PROJECT_ROOT / path
@@ -271,7 +290,7 @@ def _sync_budget_actuals(connection: sqlite3.Connection, user_id: str, month: st
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--user-id", default="U001", help="User to add data for (default: U001).")
+    parser.add_argument("--user-id", help="User to add data for (default: FINANCE_USER_ID from .env, else U001).")
     parser.add_argument("--database", help="SQLite database path (default: DATABASE_PATH or data/database/personal_finance.db).")
     parser.add_argument(
         "--through",
@@ -280,13 +299,51 @@ def parse_arguments(argv=None):
     )
     parser.add_argument("--no-highlight", action="store_true", help="Do not add the one unusual purchase in the latest month.")
     parser.add_argument("--remove", action="store_true", help="Remove previously generated DEMO- rows and exit.")
+    parser.add_argument("--status", action="store_true", help="Show which database and user the app uses and their latest data, then exit.")
     return parser.parse_args(argv)
+
+
+def _latest(connection: sqlite3.Connection, user_id: str) -> tuple:
+    return connection.execute(
+        """
+        SELECT MAX(transaction_date),
+               MAX(CASE WHEN lower(transaction_type) = 'expense' THEN transaction_date END),
+               SUM(CASE WHEN transaction_id LIKE ? THEN 1 ELSE 0 END),
+               COUNT(*)
+        FROM transactions WHERE user_id = ?
+        """,
+        (f"{DEMO_PREFIX}%", user_id),
+    ).fetchone()
+
+
+def print_status(database: Path, user_id: str, app_user: str | None) -> None:
+    print(f"Database:         {database}")
+    print(f"App user (FINANCE_USER_ID): {app_user or 'not set'}")
+    with sqlite3.connect(database) as connection:
+        if connection.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone() is None:
+            print(f"User {user_id}: NOT FOUND in the users table")
+            return
+        latest, latest_expense, generated, total = _latest(connection, user_id)
+    print(f"User {user_id}: {total} transactions, {generated} generated (DEMO-)")
+    print(f"  latest transaction: {latest}   latest expense: {latest_expense}")
 
 
 def main(argv=None) -> int:
     args = parse_arguments(argv)
     database = _database_path(args.database)
+    app_user = _app_setting("FINANCE_USER_ID")
+    args.user_id = args.user_id or app_user or "U001"
+    if args.status:
+        print_status(database, args.user_id, app_user)
+        return 0
+    if app_user and app_user != args.user_id:
+        print(
+            f"Note: the app shows user {app_user} (FINANCE_USER_ID), not {args.user_id}. "
+            f"Run without --user-id, or set FINANCE_USER_ID={args.user_id} in .env.",
+        )
     through = args.through or (_month_start(date.today()) - timedelta(days=1))
+    print(f"Database: {database}")
+    print(f"User:     {args.user_id}")
     backup = _backup(database)
     print(f"Backup written to {backup}")
     connection = sqlite3.connect(database)
@@ -307,7 +364,10 @@ def main(argv=None) -> int:
         f"Added {summary['transactions']} transactions and {summary['budgets']} budgets for "
         f"{args.user_id}: {summary['months'][0]} to {summary['months'][-1]} (through {through})."
     )
-    print("Restart the backend and AI service, then refresh the browser.")
+    with sqlite3.connect(database) as connection:
+        latest, latest_expense, generated, _ = _latest(connection, args.user_id)
+    print(f"Check: latest expense for {args.user_id} is now {latest_expense} ({generated} generated rows).")
+    print("Refresh the browser (Ctrl+Shift+R); the month button should show the new latest month.")
     print(f"To undo: python scripts/add_recent_data.py --user-id {args.user_id} --remove")
     return 0
 

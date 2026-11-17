@@ -129,16 +129,18 @@ passed. To show current data for one user, generate recent months from that
 user's own history (run from the project root):
 
 ```bash
-python scripts/add_recent_data.py --user-id U001
+python scripts/add_recent_data.py
 ```
 
-This adds complete months up to the end of last month, so the forecast is for the
+It uses the same database and user as the app (`DATABASE_PATH` and
+`FINANCE_USER_ID` from `.env`); `--status` shows which ones and the user's latest
+month. This adds complete months up to the end of last month, so the forecast is for the
 current month. The script backs up the database to `data/database/backups/`
 first. Generated rows have IDs starting with `DEMO-`. Re-running it replaces
 them, and `--remove` deletes them:
 
 ```bash
-python scripts/add_recent_data.py --user-id U001 --remove
+python scripts/add_recent_data.py --remove
 ```
 
 Restart the backend and AI service afterwards, then use **Run AI analysis** on
