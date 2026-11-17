@@ -9,14 +9,13 @@ export default function TransactionTable({ rows = [], onEdit, onDelete, compact 
   return (
     <div className="table-scroll">
       <table className="data-table">
-        <thead><tr><th>Transaction</th>{!compact && <th>Transaction ID</th>}<th>Date</th><th>Category</th><th>Type</th><th className="align-right">Amount</th><th aria-label="Actions" /></tr></thead>
+        <thead><tr><th>Transaction</th><th>Date</th><th>Category</th><th>Type</th><th className="align-right">Amount</th><th aria-label="Actions" /></tr></thead>
         <tbody>
           {rows.map((row) => {
             const income = row.type === "Income";
             return (
               <tr key={row.id}>
-                <td><div className="transaction-cell"><span className={`merchant-logo ${income ? "income" : ""}`}>{initials(row.merchant)}</span><span><strong>{row.description}</strong><small>{row.merchant}</small></span></div></td>
-                {!compact && <td className="muted-cell">{row.id}</td>}
+                <td><div className="transaction-cell" title={`Transaction ID ${row.id}`}><span className={`merchant-logo ${income ? "income" : ""}`}>{initials(row.merchant)}</span><span><strong>{row.description}</strong><small>{row.merchant}</small></span></div></td>
                 <td className="muted-cell">{shortDate(row.date)}</td>
                 <td><span className="category-chip">{row.category}</span>{row.suggested_category && <small className="category-suggestion">Model suggestion: {row.suggested_category} ({Math.round(row.category_confidence * 100)}%)</small>}</td>
                 <td><span className={`type-label ${income ? "income" : "expense"}`}>{income ? <ArrowDownLeft size={13} /> : <ArrowUpRight size={13} />}{row.type}</span></td>
@@ -27,7 +26,7 @@ export default function TransactionTable({ rows = [], onEdit, onDelete, compact 
               </tr>
             );
           })}
-          {rows.length === 0 && <tr><td className="empty-table" colSpan={compact ? 6 : 7}>No transactions found for these filters.</td></tr>}
+          {rows.length === 0 && <tr><td className="empty-table" colSpan={6}>No transactions found for these filters.</td></tr>}
         </tbody>
       </table>
     </div>

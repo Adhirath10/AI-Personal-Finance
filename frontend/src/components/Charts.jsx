@@ -63,7 +63,7 @@ export function SpendingLineChart({ data = [] }) {
   );
 }
 
-export function FeatureImportanceChart({ data = [] }) {
+export function FeatureImportanceChart({ data = [], valueFormatter = (value) => Number(value).toFixed(4) }) {
   const rows = [...data].sort((a, b) => Math.abs(b.value ?? b.importance ?? b.mean_absolute_shap ?? 0) - Math.abs(a.value ?? a.importance ?? a.mean_absolute_shap ?? 0)).slice(0, 8);
   return (
     <ResponsiveContainer width="100%" height={Math.max(240, rows.length * 38)}>
@@ -71,8 +71,8 @@ export function FeatureImportanceChart({ data = [] }) {
         <CartesianGrid horizontal={false} stroke="#edf0f5" />
         <XAxis type="number" hide />
         <YAxis type="category" dataKey="feature" width={132} axisLine={false} tickLine={false} tick={{ ...axis, fill: "#59657a" }} />
-        <Tooltip formatter={(value) => Number(value).toFixed(4)} />
-        <Bar dataKey={(item) => Math.abs(item.value ?? item.importance ?? item.mean_absolute_shap ?? item.shap_value ?? 0)} name="Mean |SHAP|" fill="#5378f6" radius={[0, 5, 5, 0]} maxBarSize={18} />
+        <Tooltip formatter={(value) => valueFormatter(value)} />
+        <Bar dataKey={(item) => Math.abs(item.value ?? item.importance ?? item.mean_absolute_shap ?? item.shap_value ?? 0)} name="Average influence" fill="#5378f6" radius={[0, 5, 5, 0]} maxBarSize={18} />
       </BarChart>
     </ResponsiveContainer>
   );

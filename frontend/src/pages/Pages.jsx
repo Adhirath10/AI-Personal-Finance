@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { errorMessage, exportTransactionsCsv } from "../services/api";
 import { clearSettings, resizeImage } from "../utils/profile";
+import { FORECAST_MONEY_FEATURES, featureLabel, fieldLabel, visibleFields } from "../utils/labels";
 import {
   Activity,
   ArrowDownRight,
@@ -49,6 +50,7 @@ import {
   ChartCard,
   EmptyAction,
   EmptyState,
+  LoadingSkeleton,
   PageHeading,
   StatusBadge,
   SummaryCard,
@@ -81,10 +83,10 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate, pr
       {period && <PeriodNote period={overview.analysis_period} />}
       {mode === "live" && data.overviewError && <div className="inline-warning"><CircleAlert size={16} />{data.overviewError}</div>}
       <div className="summary-grid">
-        <SummaryCard label="Recorded income" value={overview.income ?? "—"} change={overview.incomeChange ?? undefined} icon={ArrowDownRight} tone="blue" helper={period ? `for ${period}` : "no transaction history"} />
-        <SummaryCard label="Recorded expenses" value={overview.expenses ?? "—"} change={overview.expenseChange ?? undefined} icon={ArrowUpRight} tone="rose" helper={period ? `for ${period}` : "no transaction history"} />
-        <SummaryCard label="Recorded surplus" value={overview.savings ?? "—"} change={overview.savingsChange ?? undefined} icon={Wallet} tone="mint" helper="income minus expenses" />
-        <SummaryCard label="Budget utilization" value={overview.budget_utilization == null ? "—" : percent(overview.budget_utilization)} icon={PieChart} tone="amber" helper="of recorded monthly budget" />
+        <SummaryCard label="Income" value={overview.income ?? "—"} change={overview.incomeChange ?? undefined} icon={ArrowDownRight} tone="blue" helper={period ? `for ${period}` : "no transaction history"} />
+        <SummaryCard label="Spending" value={overview.expenses ?? "—"} change={overview.expenseChange ?? undefined} icon={ArrowUpRight} tone="rose" helper={period ? `for ${period}` : "no transaction history"} />
+        <SummaryCard label="Saved" value={overview.savings ?? "—"} change={overview.savingsChange ?? undefined} icon={Wallet} tone="mint" helper="income minus expenses" />
+        <SummaryCard label="Budget used" value={overview.budget_utilization == null ? "—" : percent(overview.budget_utilization)} icon={PieChart} tone="amber" helper="of recorded monthly budget" />
       </div>
       <div className="dashboard-grid">
         <ChartCard title="Income vs. expenses" subtitle="Your monthly cash flow" className="span-7" action={<div className="chart-tools"><ChartLegend items={[{ label: "Income", color: "#5578f5" }, { label: "Expenses", color: "#c6d2fb" }]} /><select className="select-button" aria-label="Chart period" value={trendMonths} onChange={(event) => setTrendMonths(Number(event.target.value))}><option value={3}>Last 3 months</option><option value={6}>Last 6 months</option><option value={12}>Last 12 months</option></select></div>}>
@@ -107,7 +109,7 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate, pr
           <div className="ai-spotlight-head"><div className="ai-spark"><Sparkles size={18} /></div><div><h2>Your AI financial pulse</h2><p>Press “Run AI analysis” above to fill these in with the saved models.</p></div><StatusBadge tone={modeIsLive ? "success" : "neutral"}>{modeIsLive ? "Models ready" : "Unavailable"}</StatusBadge></div>
           <div className="pulse-grid">
             <div className="pulse-item"><span className="pulse-kicker"><TrendingDown size={14} />Expense forecast</span><strong>{data.forecast?.status === "available" ? currency(data.forecast.predicted_expense) : data.forecast?.status ? "Unavailable" : "Not run"}</strong><p>{data.forecast?.status === "available" ? `For ${data.forecast.forecast_month}${data.forecast.is_historical ? ` · from records through ${data.forecast.history_end_month}` : ""}` : data.forecast?.reason || data.forecast?.skip_reason || "Run forecasting to check model availability."}</p><button className="text-button" onClick={() => onNavigate("/forecasting")}>Explore forecast <ArrowRight size={13} /></button></div>
-            <div className="pulse-item"><span className="pulse-kicker"><ShieldAlert size={14} />Unusual activity</span><strong>{data.anomalies?.status === "available" ? (data.anomalies.anomaly_count ?? "—") : "Not run"}</strong><p>{data.anomalies?.analysis_period?.selected_month ? `Recorded period ${data.anomalies.analysis_period.selected_month}` : "Run the saved model to review potential outliers."}</p><button className="text-button" onClick={() => onNavigate("/anomalies")}>Review activity <ArrowRight size={13} /></button></div>
+            <div className="pulse-item"><span className="pulse-kicker"><ShieldAlert size={14} />Unusual activity</span><strong>{data.anomalies?.status === "available" ? (data.anomalies.anomaly_count ?? "—") : "Not run"}</strong><p>{data.anomalies?.analysis_period?.selected_month ? `High or medium severity in ${monthTitle(data.anomalies.analysis_period.selected_month)}` : "Run the saved model to review potential outliers."}</p><button className="text-button" onClick={() => onNavigate("/anomalies")}>Review activity <ArrowRight size={13} /></button></div>
             <div className="pulse-item"><span className="pulse-kicker"><Lightbulb size={14} />Smart suggestions</span><strong>{Array.isArray(data.recommendations) ? data.recommendations.length : "Not run"}</strong><p>{data.recommendationsPeriod?.selected_month ? `Analysis period ${data.recommendationsPeriod.selected_month}` : "Request data-backed recommendations."}</p><button className="text-button" onClick={() => onNavigate("/recommendations")}>See suggestions <ArrowRight size={13} /></button></div>
             <div className="pulse-item"><span className="pulse-kicker"><Sparkles size={14} />Spending insights</span><strong>{data.insights?.items ? data.insights.items.length : "Not run"}</strong><p>{data.insights?.items?.[0] ? `${data.insights.items[0].title} (${insightChangeLabel(data.insights.items[0])})` : "Compare each category with earlier months."}</p><button className="text-button" onClick={() => onNavigate("/insights")}>View insights <ArrowRight size={13} /></button></div>
           </div>
@@ -115,6 +117,11 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate, pr
       </div>
     </div>
   );
+}
+
+// "Groceries budget exceeded in 2026-10" -> "... in October 2026"
+function humanizeMonths(text) {
+  return String(text ?? "").replace(/\b\d{4}-(0[1-9]|1[0-2])\b/g, (month) => monthTitle(month));
 }
 
 function greeting() {
@@ -152,6 +159,22 @@ function WelcomeHero({ overview, profile, mode, runningAll, onRunAll, onAdd }) {
       </div>
     </section>
   );
+}
+
+// Run a page's AI model when the page opens (and again after the month changes),
+// once per month, so people see results instead of an empty page.
+function useAutoLoad({ mode, result, loading, month, load }) {
+  const attempted = useRef(null);
+  useEffect(() => {
+    const key = month || "default";
+    if (mode !== "live" || result !== undefined || loading || attempted.current === key) return;
+    attempted.current = key;
+    load();
+  }, [mode, result, loading, month, load]);
+}
+
+function AiLoading({ text }) {
+  return <section className="panel ai-loading" aria-live="polite"><div className="ai-loading-head"><span className="ai-spark"><Sparkles size={16} /></span><strong>{text}</strong></div><LoadingSkeleton rows={3} /></section>;
 }
 
 function PeriodNote({ period }) {
@@ -235,6 +258,7 @@ export function TransactionsPage({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const searchInput = useRef(null);
   const [query, setQuery] = useState(() => location.state?.search || "");
   const [type, setType] = useState("All types");
   const [category, setCategory] = useState("All categories");
@@ -251,6 +275,7 @@ export function TransactionsPage({
     if (location.state.search !== undefined) {
       setQuery(location.state.search);
       setPage(1);
+      window.setTimeout(() => searchInput.current?.focus(), 0);
     }
     if (location.state.addTransaction) setEditing({});
     navigate(location.pathname, { replace: true, state: null });
@@ -307,7 +332,7 @@ export function TransactionsPage({
   };
   return (
     <div className="page-stack">
-      <PageHeading eyebrow={data.overview?.analysis_period?.month ? `Stored activity · ${data.overview.analysis_period.month}` : "Your activity"} title="Transactions" description="Track, search and organize your recorded income and spending." actions={<><Button variant="outline" icon={Sparkles} disabled={!rows.length || transactionLoading || mode !== "live" || data.modelLoading?.categorize} onClick={() => onRunModel("categorize", { items: rows.map((row) => ({ id: row.id, description: row.description, merchant: row.merchant })) }, "Transaction categorization")}>{data.modelLoading?.categorize ? "Categorizing..." : "Auto categorize"}</Button><Button icon={Plus} onClick={() => setEditing({})}>Add transaction</Button></>} />
+      <PageHeading eyebrow={data.overview?.analysis_period?.month ? `All transactions · totals for ${monthTitle(data.overview.analysis_period.month)}` : "Your activity"} title="Transactions" description="Track, search and organize your recorded income and spending." actions={<><Button variant="outline" icon={Sparkles} disabled={!rows.length || transactionLoading || mode !== "live" || data.modelLoading?.categorize} onClick={() => onRunModel("categorize", { items: rows.map((row) => ({ id: row.id, description: row.description, merchant: row.merchant })) }, "Transaction categorization")}>{data.modelLoading?.categorize ? "Categorizing..." : "Auto categorize"}</Button><Button icon={Plus} onClick={() => setEditing({})}>Add transaction</Button></>} />
       {data.transactionsError && <div className="inline-warning"><CircleAlert size={16} />{data.transactionsError}</div>}
       <div className="summary-grid summary-grid-small">
         <SummaryCard label="Matching transactions" value={total} format="number" icon={Activity} tone="blue" helper="for selected filters" />
@@ -316,7 +341,7 @@ export function TransactionsPage({
       </div>
       <section className="panel transactions-panel">
         <div className="filter-toolbar">
-          <label className="table-search"><Search size={16} /><input placeholder="Search merchant or description" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} /></label>
+          <label className="table-search"><Search size={16} /><input ref={searchInput} placeholder="Search merchant or description" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} /></label>
           <div className="filter-controls"><select aria-label="Transaction type" value={type} onChange={(event) => { setType(event.target.value); setPage(1); }}><option>All types</option><option>Income</option><option>Expense</option></select><select aria-label="Category" value={category} onChange={(event) => { setCategory(event.target.value); setPage(1); }}><option>All categories</option>{categories.map((item) => <option key={item}>{item}</option>)}</select><select aria-label="Sort transactions" value={sort} onChange={(event) => setSort(event.target.value)}><option value="date-new">Newest first</option><option value="date-old">Oldest first</option><option value="amount-high">Amount: high to low</option><option value="amount-low">Amount: low to high</option></select><input aria-label="Start date" type="date" value={startDate} onChange={(event) => { setStartDate(event.target.value); setPage(1); }} /><input aria-label="End date" type="date" value={endDate} onChange={(event) => { setEndDate(event.target.value); setPage(1); }} /></div>
         </div>
         {transactionLoading ? <div className="empty-table">Loading transactions…</div> : rows.length ? <TransactionTable rows={rows} onEdit={setEditing} onDelete={onDelete ? (row) => onDelete("transactions", row.id) : undefined} /> : <EmptyState title="No matching transactions" description={data.transactionsError || "Try adjusting your search or filters."} />}
@@ -329,7 +354,8 @@ export function TransactionsPage({
 
 export function InsightsPage({ data, mode, onRunModel }) {
   const insights = data.insights;
-  return <div className="page-stack"><PageHeading eyebrow={insights?.analysis_period?.selected_month ? `Recorded period · ${insights.analysis_period.selected_month}` : "Patterns & opportunities"} title="AI insights" description="Patterns derived from this user’s stored transaction history." actions={<Button variant="outline" icon={RefreshCw} disabled={mode !== "live" || data.modelLoading?.insights} onClick={() => onRunModel("insights", {}, "AI insights")}>{data.modelLoading?.insights ? "Analyzing..." : "Refresh insights"}</Button>} />{insights?.notice && <div className="info-strip" role="status"><CircleAlert size={16} /><span>{insights.notice}</span></div>}{insights?.items?.length ? <div className="insight-grid">{insights.items.map((item, index) => <InsightCard key={item.id || index} item={item} />)}</div> : <EmptyState title={insights?.status === "unavailable" ? "Insights unavailable" : "No AI insights available"} description={insights?.reason || data.insightsError || "Request analysis to check for transaction patterns. No insights are fabricated when the service is unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.insights} onClick={() => onRunModel("insights", {}, "AI insights")}>Request insights</Button>} />}<div className="info-strip"><BrainCircuit size={17} /><span>Insights are based on recorded transactions. Their analysis period may be historical.</span></div></div>;
+  useAutoLoad({ mode, result: insights, loading: data.modelLoading?.insights, month: data.overview?.analysis_period?.month, load: () => onRunModel("insights", {}, "AI insights", { quiet: true, reportErrors: true }) });
+  return <div className="page-stack"><PageHeading eyebrow={insights?.analysis_period?.selected_month ? monthTitle(insights.analysis_period.selected_month) : "Patterns & opportunities"} title="AI insights" description="How this month’s spending in each category compares with your usual month." actions={<Button variant="outline" icon={RefreshCw} disabled={mode !== "live" || data.modelLoading?.insights} onClick={() => onRunModel("insights", {}, "AI insights")}>{data.modelLoading?.insights ? "Analyzing..." : "Refresh insights"}</Button>} />{insights?.notice && <div className="info-strip" role="status"><CircleAlert size={16} /><span>{insights.notice}</span></div>}{!insights && data.modelLoading?.insights ? <AiLoading text="Comparing this month’s spending with earlier months…" /> : insights?.items?.length ? <div className="insight-grid">{insights.items.map((item, index) => <InsightCard key={item.id || index} item={item} />)}</div> : <EmptyState title={insights?.status === "unavailable" ? "Insights unavailable" : "No AI insights available"} description={insights?.reason || data.insightsError || "Request analysis to check for transaction patterns. No insights are fabricated when the service is unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.insights} onClick={() => onRunModel("insights", {}, "AI insights")}>Request insights</Button>} />}<div className="info-strip"><BrainCircuit size={17} /><span>Insights compare the month chosen at the top with the three months before it.</span></div></div>;
 }
 
 function insightChange(item) {
@@ -349,19 +375,18 @@ function insightChangeLabel(item) {
 function InsightCard({ item }) {
   const change = insightChange(item);
   const direction = change == null || Math.abs(change) < 0.005 ? "flat" : change > 0 ? "up" : "down";
-  return <article className={`panel insight-card insight-${direction}`}><div className="insight-card-top"><div className="insight-symbol"><Sparkles size={18} /></div>{change != null && <span className={`insight-change ${direction}`}>{direction === "up" ? <TrendingUp size={15} /> : direction === "down" ? <TrendingDown size={15} /> : null}{insightChangeLabel(item)}</span>}</div><StatusBadge tone={item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success"}>{item.priority || "Insight"}</StatusBadge><h3>{item.title}</h3><p>{item.description}</p>{item.supporting_values && <div className="support-values">{Object.entries(item.supporting_values).map(([name, value]) => <span key={name}>{name.replaceAll("_", " ")} <strong>{formatInsightValue(name, value)}</strong></span>)}</div>}</article>;
-}
-
-function formatInsightValue(name, value) {
-  if (/(spending|average)/i.test(name) && hasMeaningfulNumber(value)) return currency(value);
-  return formatRecommendationSupportValue(name, value);
+  return <article className={`panel insight-card insight-${direction}`}><div className="insight-card-top"><div className="insight-symbol"><Sparkles size={18} /></div>{change != null && <span className={`insight-change ${direction}`}>{direction === "up" ? <TrendingUp size={15} /> : direction === "down" ? <TrendingDown size={15} /> : null}{insightChangeLabel(item)}</span>}</div><StatusBadge tone={item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success"}>{item.priority || "Insight"}</StatusBadge><h3>{item.title}</h3><p>{humanizeMonths(item.description)}</p>{item.supporting_values?.latest_month_spending != null && <div className="insight-compare"><span>This month <strong>{currency(item.supporting_values.latest_month_spending)}</strong></span><span>Usual month <strong>{currency(item.supporting_values.historical_monthly_average)}</strong></span></div>}</article>;
 }
 
 export function ForecastPage({ data, mode, onRunModel, navigate }) {
   const forecast = data.forecast;
   const explanation = data.explainability?.forecast;
   const usable = forecast?.status === "available" && forecast.predicted_expense != null;
-  return <div className="page-stack"><PageHeading eyebrow="Predictive finance" title="Expense forecasting" description="Run the saved Random Forest model against available recorded history." actions={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Running forecast..." : "Run forecast"}</Button>} />{usable ? <>{forecast.is_historical ? <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{forecast.notice || `Recorded history ends in ${forecast.history_end_month}, so the forecast month ${forecast.forecast_month} has already passed.`}</span></div> : <div className="info-strip"><CircleAlert size={16} /><span>Forecast for the month after your latest recorded expenses ({forecast.history_end_month || forecast.analysis_period?.selected_month}).</span></div>}<div className="forecast-hero"><div className="forecast-main"><div className="forecast-kicker"><Sparkles size={15} />FORECAST <TooltipNote>Model output from the connected forecasting API.</TooltipNote></div><strong>{currency(forecast.predicted_expense)}</strong><span>Predicted expenses for {forecast.forecast_month}</span>{forecast.is_historical ? <StatusBadge tone="warning">Based on historical records</StatusBadge> : <StatusBadge tone="success">Model response received</StatusBadge>}</div><div className="forecast-metrics"><MiniMetric icon={Activity} label="MAE" value={forecast.mae == null ? "—" : currency(forecast.mae)} /><MiniMetric icon={Activity} label="RMSE" value={forecast.rmse == null ? "—" : currency(forecast.rmse)} /><MiniMetric icon={Activity} label="MAPE" value={forecast.mape == null ? "—" : `${Number(forecast.mape).toFixed(1)}%`} /></div></div><ChartCard title="Historical spending" subtitle="Recorded monthly expenses"><div className="chart-area chart-area-tall"><SpendingLineChart data={data.monthly || []} /></div></ChartCard>{explanation?.feature_importance?.length ? <ChartCard title="What drives this forecast?" subtitle="Global mean absolute SHAP contribution"><FeatureImportanceChart data={explanation.feature_importance} /></ChartCard> : <EmptyState title={explanation?.status && explanation.status !== "available" ? "SHAP explanation unavailable" : "Explain this forecast"} description={explanation?.reason || "See which recent spending features pushed this prediction up or down."} action={<div className="heading-actions"><Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={() => onRunModel("explainability", { model: "forecast" }, "Forecast explanation")}>{data.modelLoading?.explainability ? "Explaining..." : "Explain this forecast"}</Button><Button variant="outline" onClick={() => navigate("/explainability")}>Open Explainable AI</Button></div>} />}{explanation?.feature_contributions?.length > 0 && <FeatureTable rows={explanation.feature_contributions} title="This prediction explained" />}</> : <EmptyState title={forecast?.status === "insufficient_history" ? "Not enough history to forecast" : forecast?.status === "unavailable" ? "Forecast unavailable" : "Forecasting has not run"} description={forecast?.reason || forecast?.skip_reason || data.forecastError || "Run the saved forecasting model on your recorded monthly expenses."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Checking..." : "Check forecast status"}</Button>} />}</div>;
+  useAutoLoad({ mode, result: forecast, loading: data.modelLoading?.forecast, month: data.overview?.analysis_period?.month, load: () => onRunModel("forecast", {}, "Expense forecast", { quiet: true, reportErrors: true }) });
+  const drivers = explanationRows("forecast", explanation?.feature_contributions || []);
+  const driverImportance = explanationRows("forecast", (explanation?.feature_importance || []).map((item) => ({ ...item, shap_value: Math.abs(item.importance ?? 0) })))
+    .map((item) => ({ feature: item.label, importance: item.shap_value }));
+  return <div className="page-stack"><PageHeading eyebrow="Predictive finance" title="Expense forecasting" description="The AI predicts your total spending for the coming month from your recent months." actions={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Updating..." : forecast ? "Update forecast" : "Run forecast"}</Button>} />{!forecast && data.modelLoading?.forecast ? <AiLoading text="Predicting next month’s spending…" /> : usable ? <>{forecast.is_historical ? <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{forecast.notice || `Recorded history ends in ${forecast.history_end_month}, so the forecast month ${forecast.forecast_month} has already passed.`}</span></div> : <div className="info-strip"><CircleAlert size={16} /><span>Forecast for the month after your latest recorded expenses ({forecast.history_end_month || forecast.analysis_period?.selected_month}).</span></div>}<div className="forecast-hero"><div className="forecast-main"><div className="forecast-kicker"><Sparkles size={15} />FORECAST <TooltipNote>Predicted by a Random Forest model trained on monthly spending patterns.</TooltipNote></div><strong>{currency(forecast.predicted_expense)}</strong><span>Predicted spending for {monthTitle(forecast.forecast_month)}</span>{forecast.is_historical ? <StatusBadge tone="warning">Based on older records</StatusBadge> : <StatusBadge tone="success">Live forecast</StatusBadge>}</div><div className="forecast-metrics"><MiniMetric icon={Activity} label="Typical error" value={forecast.mae == null ? "—" : `± ${currency(forecast.mae)}`} /><MiniMetric icon={Activity} label="Usually within" value={forecast.mape == null ? "—" : `± ${Math.round(Number(forecast.mape))}%`} /><MiniMetric icon={Activity} label="Based on" value={forecast.history_months ? `${forecast.history_months} months` : "—"} /></div></div><ChartCard title="Your monthly spending" subtitle="Recorded months up to the one selected at the top"><div className="chart-area chart-area-tall"><SpendingLineChart data={data.monthly || []} /></div></ChartCard>{driverImportance.length ? <ChartCard title="What drives this forecast?" subtitle="Average influence of each factor"><FeatureImportanceChart data={driverImportance} valueFormatter={(value) => currency(value)} /></ChartCard> : <EmptyState title={explanation?.status && explanation.status !== "available" ? "Explanation unavailable" : "Why this amount?"} description={explanation?.reason || "See which parts of your recent spending pushed this prediction up or down."} action={<div className="heading-actions"><Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={() => onRunModel("explainability", { model: "forecast" }, "Forecast explanation")}>{data.modelLoading?.explainability ? "Explaining..." : "Explain this forecast"}</Button><Button variant="outline" onClick={() => navigate("/explainability")}>Open Explainable AI</Button></div>} />}{drivers.length > 0 && <FeatureTable rows={drivers} model="forecast" title="This prediction explained" />}</> : <EmptyState title={forecast?.status === "insufficient_history" ? "Not enough history to forecast" : forecast?.status === "unavailable" ? "Forecast unavailable" : "Forecast not loaded yet"} description={forecast?.reason || forecast?.skip_reason || data.forecastError || "Predict next month’s spending from your recent months."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Checking..." : "Check forecast status"}</Button>} />}</div>;
 }
 
 const REVIEWED_KEY = "finai-reviewed-anomalies";
@@ -389,6 +414,7 @@ export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
   const [filter, setFilter] = useState("important");
   const [reviewed, setReviewed] = useState(readReviewed);
   const counts = result?.severity_counts || { High: 0, Medium: 0, Low: 0 };
+  useAutoLoad({ mode, result, loading: data.modelLoading?.anomalies, month: data.overview?.analysis_period?.month, load: () => onRunModel("anomalies", {}, "Anomaly detection", { quiet: true, reportErrors: true }) });
   const month = result?.scope_month || result?.analysis_period?.selected_month;
   const toggleReviewed = (id) => {
     setReviewed((current) => {
@@ -415,9 +441,9 @@ export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
   };
 
   return <div className="page-stack">
-    <PageHeading eyebrow={month ? `Checked period · ${month}` : "Transaction safety"} title="Anomaly detection" description="Transactions that don’t fit your usual spending, with the reasons why." actions={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={analyze}>{data.modelLoading?.anomalies ? "Analyzing..." : result ? "Re-check" : "Analyze transactions"}</Button>} />
+    <PageHeading eyebrow={month ? monthTitle(month) : "Transaction safety"} title="Anomaly detection" description="Transactions that don’t fit your usual spending, with the reasons why." actions={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={analyze}>{data.modelLoading?.anomalies ? "Analyzing..." : result ? "Re-check" : "Analyze transactions"}</Button>} />
     <div className="info-strip info-warning"><ShieldAlert size={17} /><span>Flags combine the trained Isolation Forest with checks against your own history: amount versus your usual purchase in that category, first payments to a merchant, share of income and repeated identical charges. A flag means “worth a look”, not confirmed fraud.</span></div>
-    {result?.status === "available" ? <>
+    {!result && data.modelLoading?.anomalies ? <AiLoading text="Checking this month’s transactions…" /> : result?.status === "available" ? <>
       <div className="summary-grid">
         <SummaryCard label="Expenses checked" value={result.total_analyzed ?? 0} format="number" icon={Activity} tone="blue" helper={month ? `in ${month}` : undefined} />
         <SummaryCard label="High severity" value={counts.High ?? 0} format="number" icon={ShieldAlert} tone="rose" helper="clear outliers" />
@@ -441,7 +467,7 @@ export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
           <div className="anomaly-actions">
             <span className="anomaly-score">{item.model_flag ? `Model score ${Number(item.anomaly_score).toFixed(3)}` : "Model saw a normal pattern; caught by the checks above"}</span>
             <button className="text-button" onClick={() => navigate("/transactions", { state: { search: item.merchant || item.description || "" } })}>View in transactions</button>
-            <button className="text-button" disabled={mode !== "live"} onClick={() => explain(item)}>Explain with SHAP <ArrowRight size={13} /></button>
+            <button className="text-button" disabled={mode !== "live"} onClick={() => explain(item)}>Why was this flagged? <ArrowRight size={13} /></button>
             <button className={`button ${isReviewed ? "button-outline" : "button-primary"} button-small`} onClick={() => toggleReviewed(id)}>{isReviewed ? "Undo review" : <><Check size={14} />Mark reviewed</>}</button>
           </div>
         </article>;
@@ -452,6 +478,7 @@ export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
 
 export function RecommendationsPage({ data, mode, onRunModel, navigate }) {
   const recommendations = data.recommendations || [];
+  useAutoLoad({ mode, result: data.recommendations, loading: data.modelLoading?.recommendations, month: data.overview?.analysis_period?.month, load: () => onRunModel("recommendations", {}, "Recommendations", { quiet: true, reportErrors: true }) });
   const priorityCounts = { High: 0, Medium: 0, Low: 0 };
   recommendations.forEach((item) => {
     const priority = item.priority || "Low";
@@ -462,7 +489,7 @@ export function RecommendationsPage({ data, mode, onRunModel, navigate }) {
     }
   });
 
-  return <div className="page-stack"><PageHeading eyebrow={data.recommendationsPeriod?.selected_month ? `Analysis period · ${data.recommendationsPeriod.selected_month}` : "Your next best moves"} title="Recommendations" description="Data-backed actions based on the configured user’s recorded financial history." actions={<Button icon={RefreshCw} variant="outline" disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>{data.modelLoading?.recommendations ? "Analyzing..." : "Refresh"}</Button>} />{recommendations.length ? <><div className="summary-grid"><SummaryCard label="Total recommendations" value={recommendations.length} format="number" icon={Lightbulb} tone="blue" /><SummaryCard label="High-priority recommendations" value={priorityCounts.High} format="number" icon={ShieldAlert} tone="rose" /><SummaryCard label="Medium-priority recommendations" value={priorityCounts.Medium} format="number" icon={CircleAlert} tone="amber" /><SummaryCard label="Low-priority recommendations" value={priorityCounts.Low} format="number" icon={BadgeCheck} tone="mint" /></div><div className="recommendation-list">{recommendations.map((item) => <RecommendationCard key={item.id || item.title} item={item} onOpen={navigate} />)}</div></> : <EmptyState title="No recommendations available" description={data.recommendationsError || "Request analysis. No suggestions are fabricated when the AI service or required artifacts are unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>Get recommendations</Button>} />}</div>;
+  return <div className="page-stack"><PageHeading eyebrow={data.recommendationsPeriod?.selected_month ? `Based on ${monthTitle(data.recommendationsPeriod.selected_month)}` : "Your next best moves"} title="Recommendations" description="Personal suggestions based on your budgets, spending trends, forecast and goals." actions={<Button icon={RefreshCw} variant="outline" disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>{data.modelLoading?.recommendations ? "Analyzing..." : "Refresh"}</Button>} />{!data.recommendations && data.modelLoading?.recommendations ? <AiLoading text="Working out your next best moves…" /> : recommendations.length ? <><div className="summary-grid"><SummaryCard label="Total recommendations" value={recommendations.length} format="number" icon={Lightbulb} tone="blue" /><SummaryCard label="High-priority recommendations" value={priorityCounts.High} format="number" icon={ShieldAlert} tone="rose" /><SummaryCard label="Medium-priority recommendations" value={priorityCounts.Medium} format="number" icon={CircleAlert} tone="amber" /><SummaryCard label="Low-priority recommendations" value={priorityCounts.Low} format="number" icon={BadgeCheck} tone="mint" /></div><div className="recommendation-list">{recommendations.map((item) => <RecommendationCard key={item.id || item.title} item={item} onOpen={navigate} />)}</div></> : <EmptyState title="No recommendations available" description={data.recommendationsError || "Request analysis. No suggestions are fabricated when the AI service or required artifacts are unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>Get recommendations</Button>} />}</div>;
 }
 
 const RECOMMENDATION_LINKS = {
@@ -478,7 +505,7 @@ const RECOMMENDATION_LINKS = {
 function RecommendationCard({ item, onOpen }) {
   const tone = item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success";
   const [to, label] = RECOMMENDATION_LINKS[item.type || item.recommendation_type] || ["/insights", "See insights"];
-  return <article className="panel recommendation-card"><div className={`recommendation-icon ${tone}`}><Lightbulb size={19} /></div><div className="recommendation-content"><div className="recommendation-top"><StatusBadge tone={tone}>{item.priority || "Priority"}</StatusBadge><span className="recommendation-type">{String(item.type || item.recommendation_type || "Recommendation").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</span></div><h3>{item.title || item.recommendation_title}</h3><p>{item.description || item.recommendation_description}</p>{item.reason && <div className="reason-line"><InfoText />{item.reason}</div>}{item.supporting_values && <div className="support-values">{Object.entries(item.supporting_values).map(([name, value]) => <span key={name}>{name.replaceAll("_", " ")} <strong>{formatRecommendationSupportValue(name, value)}</strong></span>)}</div>}</div><button className="recommendation-link" onClick={() => onOpen(to)} title={label}><span>{label}</span><ArrowRight size={15} /></button></article>;
+  return <article className="panel recommendation-card"><div className={`recommendation-icon ${tone}`}><Lightbulb size={19} /></div><div className="recommendation-content"><div className="recommendation-top"><StatusBadge tone={tone}>{item.priority || "Priority"}</StatusBadge><span className="recommendation-type">{String(item.type || item.recommendation_type || "Recommendation").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</span></div><h3>{humanizeMonths(item.title || item.recommendation_title)}</h3><p>{humanizeMonths(item.description || item.recommendation_description)}</p>{item.reason && <div className="reason-line"><InfoText />{humanizeMonths(item.reason)}</div>}{item.supporting_values && <div className="support-values">{visibleFields(item.supporting_values).slice(0, 6).map(([name, value]) => <span key={name}>{fieldLabel(name)} <strong>{name === "month" || name === "forecast_month" ? monthTitle(value) : formatRecommendationSupportValue(name, value)}</strong></span>)}</div>}</div><button className="recommendation-link" onClick={() => onOpen(to)} title={label}><span>{label}</span><ArrowRight size={15} /></button></article>;
 }
 function InfoText() { return <CircleAlert size={14} />; }
 
@@ -493,7 +520,7 @@ export function BudgetsPage({ data, mode, onSave, onDelete }) {
     const payload = { category: form.get("category"), amount: Number(form.get("amount")), month: form.get("month") };
     if (await onSave("budgets", payload, editing?.id)) setEditing(null);
   };
-  return <div className="page-stack"><PageHeading eyebrow={budgets[0]?.budget_month ? `Recorded budget · ${budgets[0].budget_month}` : "Plan with confidence"} title="Budgets" description="Set monthly limits and compare them with recorded expenses." actions={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} /><div className="summary-grid"><SummaryCard label="Monthly budget" value={total} icon={Wallet} tone="blue" /><SummaryCard label="Recorded spending" value={spent} icon={ArrowUpRight} tone="rose" /><SummaryCard label="Remaining" value={Math.max(0, total - spent)} icon={CircleDollarSign} tone="mint" /><SummaryCard label="Overall utilization" value={percent(total ? spent / total * 100 : 0)} icon={PieChart} tone="amber" /></div><div className="budget-page-grid">{budgets.length ? budgets.map((budget) => <article className="panel budget-card" key={budget.id}><div className="budget-card-top"><div><span className="budget-category-icon"><Wallet size={17} /></span><h3>{budget.category}</h3></div><details className="row-menu"><summary aria-label="Budget actions">···</summary><div className="row-menu-pop"><button onClick={() => setEditing(budget)}>Edit budget</button><button className="danger-action" onClick={() => onDelete("budgets", budget.id)}>Delete budget</button></div></details></div><div className="budget-amount">{currency(budget.spent)} <small>spent of {currency(budget.amount)}</small></div><BudgetProgress budget={budget} /><div className="budget-card-bottom"><span>{budget.budget_month || "Month not provided"}</span><StatusBadge tone={budget.spent > budget.amount ? "danger" : "success"}>{budget.spent > budget.amount ? "Over budget" : "On track"}</StatusBadge></div></article>) : <EmptyState title="No budgets yet" description="Create a monthly budget to keep spending on track." action={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} />}</div>{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={save}><header><div><h2>{editing.id ? "Edit budget" : "Create budget"}</h2><p>Choose a category and month for your limit.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Category<select name="category" defaultValue={editing.category || "Other"}>{(data.transactionCategories || []).map((item) => <option key={item}>{item}</option>)}</select></label><label>Monthly amount (₹)<input name="amount" type="number" min="1" required defaultValue={editing.amount || ""} /></label><label>Month<input name="month" type="month" required defaultValue={editing.budget_month || budgets[0]?.budget_month || data.overview?.analysis_period?.month || new Date().toISOString().slice(0, 7)} /></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">Save budget</Button></footer></form></div>}</div>;
+  return <div className="page-stack"><PageHeading eyebrow={budgets[0]?.budget_month ? monthTitle(budgets[0].budget_month) : "Plan with confidence"} title="Budgets" description="Set monthly limits and compare them with recorded expenses." actions={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} /><div className="summary-grid"><SummaryCard label="Monthly budget" value={total} icon={Wallet} tone="blue" /><SummaryCard label="Spent so far" value={spent} icon={ArrowUpRight} tone="rose" /><SummaryCard label="Remaining" value={Math.max(0, total - spent)} icon={CircleDollarSign} tone="mint" /><SummaryCard label="Overall utilization" value={percent(total ? spent / total * 100 : 0)} icon={PieChart} tone="amber" /></div><div className="budget-page-grid">{budgets.length ? budgets.map((budget) => <article className="panel budget-card" key={budget.id}><div className="budget-card-top"><div><span className="budget-category-icon"><Wallet size={17} /></span><h3>{budget.category}</h3></div><details className="row-menu"><summary aria-label="Budget actions">···</summary><div className="row-menu-pop"><button onClick={() => setEditing(budget)}>Edit budget</button><button className="danger-action" onClick={() => onDelete("budgets", budget.id)}>Delete budget</button></div></details></div><div className="budget-amount">{currency(budget.spent)} <small>spent of {currency(budget.amount)}</small></div><BudgetProgress budget={budget} hideMeta /><div className="budget-card-bottom"><span>{budget.budget_month || "Month not provided"}</span><StatusBadge tone={budget.spent > budget.amount ? "danger" : "success"}>{budget.spent > budget.amount ? "Over budget" : "On track"}</StatusBadge></div></article>) : <EmptyState title="No budgets yet" description="Create a monthly budget to keep spending on track." action={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} />}</div>{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={save}><header><div><h2>{editing.id ? "Edit budget" : "Create budget"}</h2><p>Choose a category and month for your limit.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Category<select name="category" defaultValue={editing.category || "Other"}>{(data.transactionCategories || []).map((item) => <option key={item}>{item}</option>)}</select></label><label>Monthly amount (₹)<input name="amount" type="number" min="1" required defaultValue={editing.amount || ""} /></label><label>Month<input name="month" type="month" required defaultValue={editing.budget_month || budgets[0]?.budget_month || data.overview?.analysis_period?.month || new Date().toISOString().slice(0, 7)} /></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">Save budget</Button></footer></form></div>}</div>;
 }
 
 export function GoalsPage({ data, mode, onSave, onDelete }) {
@@ -504,7 +531,7 @@ export function GoalsPage({ data, mode, onSave, onDelete }) {
     const payload = { name: form.get("name"), target: Number(form.get("target")), current: Number(form.get("current")), date: form.get("date") };
     if (await onSave("goals", payload, editing?.id)) setEditing(null);
   };
-  return <div className="page-stack"><PageHeading eyebrow="Stored financial goals" title="Financial goals" description="Track progress against goals stored for the configured user." actions={<Button icon={Plus} onClick={() => setEditing({})}>Create a goal</Button>} /><div className="goal-grid">{(data.goals || []).map((goal) => { const progress = goal.target ? Math.min(100, Math.round(goal.current / goal.target * 100)) : 0; return <article className="panel goal-card" key={goal.id}><div className="goal-card-top"><span className="goal-symbol"><Target size={19} /></span><details className="row-menu"><summary aria-label="Goal actions">···</summary><div className="row-menu-pop"><button onClick={() => setEditing(goal)}>Update goal</button><button className="danger-action" onClick={() => onDelete("goals", goal.id)}>Delete goal</button></div></details></div><h3>{goal.name}</h3><p>Target date · {shortDate(goal.date)}</p><div className="goal-progress"><div className="goal-progress-label"><strong>{currency(goal.current)}</strong><span>{currency(goal.target)} goal</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><div className="goal-progress-label"><span>{progress}% completed</span><span>{currency(Math.max(goal.target - goal.current, 0))} to go</span></div></div><button className="button button-outline button-full" onClick={() => setEditing(goal)}>Update progress</button></article>; })}{!data.goals?.length && <EmptyState title="Start your first goal" description="Create a savings goal and track progress over time." action={<Button icon={Plus} onClick={() => setEditing({})}>Create a goal</Button>} />}</div>{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={save}><header><div><h2>{editing.id ? "Update financial goal" : "Create a financial goal"}</h2><p>Make progress visible, one step at a time.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Goal name<input name="name" required defaultValue={editing.name || ""} /></label><label>Target amount (₹)<input name="target" type="number" min="1" required defaultValue={editing.target || ""} /></label><label>Current savings (₹)<input name="current" type="number" min="0" required defaultValue={editing.current || 0} /></label><label>Target date<input name="date" type="date" required defaultValue={editing.date || ""} /></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">Save goal</Button></footer></form></div>}</div>;
+  return <div className="page-stack"><PageHeading eyebrow="Plan ahead" title="Financial goals" description="Track progress towards your savings goals." actions={<Button icon={Plus} onClick={() => setEditing({})}>Create a goal</Button>} /><div className="goal-grid">{(data.goals || []).map((goal) => { const progress = goal.target ? Math.min(100, Math.round(goal.current / goal.target * 100)) : 0; return <article className="panel goal-card" key={goal.id}><div className="goal-card-top"><span className="goal-symbol"><Target size={19} /></span><details className="row-menu"><summary aria-label="Goal actions">···</summary><div className="row-menu-pop"><button onClick={() => setEditing(goal)}>Update goal</button><button className="danger-action" onClick={() => onDelete("goals", goal.id)}>Delete goal</button></div></details></div><h3>{goal.name}</h3><p>Target date · {shortDate(goal.date)}</p><div className="goal-progress"><div className="goal-progress-label"><strong>{currency(goal.current)}</strong><span>{currency(goal.target)} goal</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><div className="goal-progress-label"><span>{progress}% completed</span><span>{currency(Math.max(goal.target - goal.current, 0))} to go</span></div></div><button className="button button-outline button-full" onClick={() => setEditing(goal)}>Update progress</button></article>; })}{!data.goals?.length && <EmptyState title="Start your first goal" description="Create a savings goal and track progress over time." action={<Button icon={Plus} onClick={() => setEditing({})}>Create a goal</Button>} />}</div>{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={save}><header><div><h2>{editing.id ? "Update financial goal" : "Create a financial goal"}</h2><p>Make progress visible, one step at a time.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Goal name<input name="name" required defaultValue={editing.name || ""} /></label><label>Target amount (₹)<input name="target" type="number" min="1" required defaultValue={editing.target || ""} /></label><label>Current savings (₹)<input name="current" type="number" min="0" required defaultValue={editing.current || 0} /></label><label>Target date<input name="date" type="date" required defaultValue={editing.date || ""} /></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">Save goal</Button></footer></form></div>}</div>;
 }
 
 export function SimulatorPage({ data, mode, onSave, toast }) {
@@ -541,14 +568,14 @@ export function SimulatorPage({ data, mode, onSave, toast }) {
     setEdited(true);
     setExpenses((current) => ({ ...current, [category]: Math.max(0, Number(value) || 0) }));
   };
-  return <div className="page-stack"><PageHeading eyebrow={data.overview?.analysis_period?.month ? `Starting values · ${data.overview.analysis_period.month}` : "Explore the possibilities"} title="What-if simulator" description="Adjust the recorded baseline and compare a hypothetical monthly cash flow." actions={<Button variant="outline" icon={RefreshCw} onClick={applyBaseline}>Reset scenario</Button>} /><div className="simulator-layout"><section className="panel simulator-controls"><div className="panel-heading"><div><h2>Monthly assumptions</h2><p>Changes stay in this browser session; baseline uses recorded values.</p></div></div><label className="sim-input-label">Monthly income <strong>{currency(income)}</strong><input type="range" min="0" max="1000000" step="5000" value={income} onChange={(event) => { setEdited(true); setIncome(Number(event.target.value)); }} /><div className="range-values"><span>₹0</span><span>₹10L</span></div></label><div className="sim-category-list">{Object.entries(expenses).map(([category, amount]) => <label key={category} className="sim-category"><span>{category}</span><div><span>₹</span><input type="number" min="0" step="500" value={amount} onChange={(event) => updateExpense(category, event.target.value)} /></div></label>)}{!Object.keys(expenses).length && <EmptyState title="No expense baseline" description="Transaction category values will appear here when the backend returns recorded expenses." />}</div></section><section className="simulator-results"><article className="sim-balance-card"><span>Hypothetical monthly balance</span><strong className={balance < 0 ? "text-danger" : ""}>{currency(balance)}</strong><p>{balance < 0 ? "Expenses exceed income in this scenario." : "This is what remains after planned expenses."}</p><div className="sim-balance-bar"><span style={{ width: `${Math.min(100, Math.max(0, balance / Math.max(income, 1) * 100))}%` }} /></div></article><div className="panel sim-breakdown"><h3>Scenario breakdown</h3><MiniMetric icon={Banknote} label="Monthly income" value={currency(income)} tone="blue" /><MiniMetric icon={ArrowUpRight} label="Total expenses" value={currency(total)} tone="rose" /><MiniMetric icon={Wallet} label="Potential savings" value={currency(Math.max(balance, 0))} tone="mint" /><MiniMetric icon={PieChart} label="Savings rate" value={ratioPercent(income ? Math.max(balance, 0) / income : 0)} tone="amber" /><div className="sim-disclaimer"><InfoText />Illustrative calculation only. This simulator does not call an AI model or alter your budget.</div></div></section></div><GoalPlanner income={income} expenses={expenses} mode={mode} onApplyCuts={(cuts) => { setEdited(true); setExpenses((current) => ({ ...current, ...cuts })); window.scrollTo({ top: 0, behavior: "smooth" }); toast?.("Suggested cuts applied — see the new monthly balance at the top."); }} onSaveGoal={(payload) => onSave("goals", payload)} /></div>;
+  return <div className="page-stack"><PageHeading eyebrow={data.overview?.analysis_period?.month ? `Starting from ${monthTitle(data.overview.analysis_period.month)}` : "Explore the possibilities"} title="What-if simulator" description="Adjust the recorded baseline and compare a hypothetical monthly cash flow." actions={<Button variant="outline" icon={RefreshCw} onClick={applyBaseline}>Reset scenario</Button>} /><div className="simulator-layout"><section className="panel simulator-controls"><div className="panel-heading"><div><h2>Monthly assumptions</h2><p>Changes stay in this browser session; baseline uses recorded values.</p></div></div><label className="sim-input-label">Monthly income <strong>{currency(income)}</strong><input type="range" min="0" max="1000000" step="5000" value={income} onChange={(event) => { setEdited(true); setIncome(Number(event.target.value)); }} /><div className="range-values"><span>₹0</span><span>₹10L</span></div></label><div className="sim-category-list">{Object.entries(expenses).map(([category, amount]) => <label key={category} className="sim-category"><span>{category}</span><div><span>₹</span><input type="number" min="0" step="500" value={amount} onChange={(event) => updateExpense(category, event.target.value)} /></div></label>)}{!Object.keys(expenses).length && <EmptyState title="No expense baseline" description="Transaction category values will appear here when the backend returns recorded expenses." />}</div></section><section className="simulator-results"><article className="sim-balance-card"><span>Hypothetical monthly balance</span><strong className={balance < 0 ? "text-danger" : ""}>{currency(balance)}</strong><p>{balance < 0 ? "Expenses exceed income in this scenario." : "This is what remains after planned expenses."}</p><div className="sim-balance-bar"><span style={{ width: `${Math.min(100, Math.max(0, balance / Math.max(income, 1) * 100))}%` }} /></div></article><div className="panel sim-breakdown"><h3>Scenario breakdown</h3><MiniMetric icon={Banknote} label="Monthly income" value={currency(income)} tone="blue" /><MiniMetric icon={ArrowUpRight} label="Total expenses" value={currency(total)} tone="rose" /><MiniMetric icon={Wallet} label="Potential savings" value={currency(Math.max(balance, 0))} tone="mint" /><MiniMetric icon={PieChart} label="Savings rate" value={ratioPercent(income ? Math.max(balance, 0) / income : 0)} tone="amber" /><div className="sim-disclaimer"><InfoText />Illustrative calculation only. This simulator does not call an AI model or alter your budget.</div></div></section></div><GoalPlanner income={income} expenses={expenses} mode={mode} onApplyCuts={(cuts) => { setEdited(true); setExpenses((current) => ({ ...current, ...cuts })); window.scrollTo({ top: 0, behavior: "smooth" }); toast?.("Suggested cuts applied — see the new monthly balance at the top."); }} onSaveGoal={(payload) => onSave("goals", payload)} /></div>;
 }
 
-function FeatureTable({ rows, title }) {
-  return <ChartCard title={title} subtitle="Signed SHAP contributions for this prediction"><div className="table-scroll"><table className="data-table"><thead><tr><th>Feature</th><th>Input value</th><th className="align-right">SHAP contribution</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.feature}-${index}`}><td><strong>{row.feature}</strong></td><td>{String(row.value ?? "—")}</td><td className={`align-right ${Number(row.shap_value) >= 0 ? "income-text" : "expense-text"}`}>{Number(row.shap_value) >= 0 ? "+" : ""}{Number(row.shap_value).toFixed(4)}</td></tr>)}</tbody></table></div></ChartCard>;
+function FeatureTable({ rows, title, model = "forecast" }) {
+  return <ChartCard title={title} subtitle="Each factor’s value and how much it moved the result"><div className="table-scroll"><table className="data-table"><thead><tr><th>Factor</th><th>Value</th><th className="align-right">Effect</th></tr></thead><tbody>{rows.map((row, index) => { const effect = Number(row.shap_value); return <tr key={`${row.label || row.feature}-${index}`}><td><strong>{row.label || featureLabel(row.feature)}</strong></td><td>{factorValue(model, row)}</td><td className={`align-right ${effect >= 0 ? "income-text" : "expense-text"}`}>{effectText(model, effect)}</td></tr>; })}</tbody></table></div></ChartCard>;
 }
 
-function WaterfallChart({ rows, baseValue, predictionValue }) {
+function WaterfallChart({ rows, baseValue, predictionValue, format = (value) => Number(value).toFixed(3), effect = (value) => `${value >= 0 ? "+" : ""}${Number(value).toFixed(3)}` }) {
   const base = Number(baseValue);
   const contributions = rows
     .filter((row) => Number.isFinite(Number(row.shap_value)))
@@ -565,7 +592,7 @@ function WaterfallChart({ rows, baseValue, predictionValue }) {
   const span = Math.max(Math.max(...bounds) - minimum, 1e-9);
   return (
     <div className="shap-waterfall">
-      <div className="waterfall-summary"><span>Baseline <strong>{base.toFixed(3)}</strong></span><span>Model output <strong>{output.toFixed(3)}</strong></span></div>
+      <div className="waterfall-summary"><span>Starting point <strong>{format(base)}</strong></span><span>Result <strong>{format(output)}</strong></span></div>
       <div className="waterfall-list">
         {steps.map((step, index) => {
           const delta = Number(step.shap_value);
@@ -574,13 +601,13 @@ function WaterfallChart({ rows, baseValue, predictionValue }) {
           const baseline = (base - minimum) / span * 100;
           return (
             <div className="waterfall-row" key={`${step.feature}-${index}`}>
-              <span className="waterfall-feature" title={step.feature}>{step.feature}</span>
+              <span className="waterfall-feature" title={step.label || step.feature}>{step.label || step.feature}</span>
               <div className="waterfall-track">
                 <i className="waterfall-baseline" style={{ left: `${baseline}%` }} />
                 <i className={`waterfall-bar ${delta >= 0 ? "positive" : "negative"}`} style={{ left: `${left}%`, width: `${width}%` }} />
               </div>
-              <strong className="waterfall-value">{delta >= 0 ? "+" : ""}{delta.toFixed(3)}</strong>
-              <span className="sr-only">{delta >= 0 ? "increases" : "decreases"} the model output</span>
+              <strong className="waterfall-value">{effect(delta)}</strong>
+              <span className="sr-only">{delta >= 0 ? "increases" : "decreases"} the result</span>
             </div>
           );
         })}
@@ -589,14 +616,71 @@ function WaterfallChart({ rows, baseValue, predictionValue }) {
   );
 }
 
+const EXPLAIN_MODELS = {
+  forecast: {
+    label: "Expense forecast",
+    intro: "Why the AI predicts this spending: each factor pushed the prediction up or down from a typical starting point.",
+  },
+  categorization: {
+    label: "Transaction category",
+    intro: "Which words in a transaction made the AI pick its category.",
+  },
+  anomaly: {
+    label: "Unusual transaction",
+    intro: "What made a transaction look unusual, or normal, to the anomaly model.",
+  },
+};
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function explanationRows(model, rows) {
+  const merged = new Map();
+  for (const row of rows) {
+    const label = model === "categorization" ? `“${row.feature}”` : featureLabel(row.feature);
+    const existing = merged.get(label);
+    if (existing) existing.shap_value += Number(row.shap_value) || 0;
+    else merged.set(label, { ...row, label, shap_value: Number(row.shap_value) || 0 });
+  }
+  return [...merged.values()].sort((left, right) => Math.abs(right.shap_value) - Math.abs(left.shap_value));
+}
+
+function effectText(model, value) {
+  if (model === "forecast") return `${value >= 0 ? "+" : "−"}${currency(Math.abs(value))}`;
+  return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(3)}`;
+}
+
+function factorValue(model, row) {
+  const value = row.value;
+  if (value == null || value === "") return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (model === "forecast") {
+    if (FORECAST_MONEY_FEATURES.has(row.feature)) return currency(number);
+    if (row.feature === "spending_change") return `${number >= 0 ? "+" : ""}${ratioPercent(number)}`;
+    if (row.feature === "month_number") return MONTH_NAMES[Math.round(number) - 1] || String(number);
+  }
+  if (model === "categorization") return number.toFixed(3);
+  if (row.feature === "is_recurring" || row.feature === "merchant_familiar") return number ? "Yes" : "No";
+  return Number.isInteger(number) ? String(number) : number.toFixed(2);
+}
+
+function summarySentence(model, row, result) {
+  const amount = effectText(model, row.shap_value).slice(1);
+  if (model === "forecast") return `${row.label} ${row.shap_value >= 0 ? "raised" : "lowered"} the forecast by ${amount}.`;
+  if (model === "categorization") return `The word ${row.label} ${row.shap_value >= 0 ? "pointed towards" : "pointed away from"} ${result.prediction_label}.`;
+  return `${row.label} made it look ${row.shap_value >= 0 ? "more" : "less"} unusual.`;
+}
+
 export function ExplainabilityPage({ data, mode, onRunModel }) {
   const location = useLocation();
   const explanation = data.explainability;
   const [selected, setSelected] = useState(() => location.state?.model || "forecast");
   const result = explanation?.[selected];
   const ready = result?.status === "available";
-  const featureRows = result?.feature_contributions || result?.individual || [];
-  const importance = result?.feature_importance || result?.global_importance || [];
+  const rows = explanationRows(selected, result?.feature_contributions || result?.individual || []);
+  const importance = explanationRows(selected, (result?.feature_importance || result?.global_importance || []).map((item) => ({ ...item, shap_value: Math.abs(item.importance ?? item.value ?? item.mean_absolute_shap ?? 0) })))
+    .map((item) => ({ feature: item.label, importance: item.shap_value }));
+  const info = EXPLAIN_MODELS[selected];
   const requestExplanation = () => {
     const transaction = selected === "categorization"
       ? data.recentTransactions?.[0]
@@ -608,9 +692,32 @@ export function ExplainabilityPage({ data, mode, onRunModel }) {
       transaction_id: transaction?.transaction_id || transaction?.id,
       description: transaction?.description,
       merchant: transaction?.merchant,
-    }, "SHAP explanation");
+    }, "Explanation");
   };
-  return <div className="page-stack"><PageHeading eyebrow="Inside the model" title="Explainable AI" description="View SHAP outputs only when the existing model and explanation pipeline return them." actions={<select className="select-button" value={selected} onChange={(event) => setSelected(event.target.value)}><option value="forecast">Expense forecast</option><option value="categorization">Transaction category</option><option value="anomaly">Anomaly score</option></select>} />{ready ? <>{result.is_historical && result.notice && <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{result.notice}</span></div>}<div className="info-strip"><BrainCircuit size={17} /><span>{result.explanation || "SHAP values explain model outputs relative to the selected reference data. They are not causal effects or proof of fraud."}</span></div>{featureRows.length > 0 && result.base_value != null && Number.isFinite(Number(result.base_value)) && <ChartCard title="SHAP waterfall" subtitle={result.score_type || "Cumulative feature contributions from baseline to model output"}><WaterfallChart rows={featureRows} baseValue={result.base_value} predictionValue={result.prediction_value ?? result.prediction ?? result.anomaly_score} /></ChartCard>}<div className="explainability-grid"><ChartCard title="Global feature importance" subtitle="Mean absolute SHAP value">{importance.length ? <FeatureImportanceChart data={importance} /> : <EmptyState title="No global SHAP values" description="This explanation returned local contributions only." />}</ChartCard><ChartCard title="Individual prediction" subtitle={result.prediction_label || result.forecast_month || "Local explanation"}>{featureRows.length ? <div className="contribution-list">{featureRows.slice(0, 8).map((row, index) => <div className="contribution-row" key={`${row.feature}-${index}`}><span>{row.feature}</span><div className="contribution-track"><i className={Number(row.shap_value) >= 0 ? "positive" : "negative"} style={{ width: `${Math.min(100, Math.abs(row.shap_value) * 30 + 8)}%` }} /></div><strong className={Number(row.shap_value) >= 0 ? "income-text" : "expense-text"}>{Number(row.shap_value) >= 0 ? "+" : ""}{Number(row.shap_value).toFixed(3)}</strong></div>)}</div> : <EmptyState title="No individual explanation" description="The API returned no local SHAP values for this request." />}</ChartCard></div>{featureRows.length > 0 && <FeatureTable rows={featureRows} title="Feature contribution details" />}</> : <EmptyState title={result?.status === "stale" ? "Explanation is stale" : result?.status === "unavailable" ? "SHAP explanation unavailable" : "No SHAP output available"} description={result?.reason || data.explainabilityError || "Request an explanation from a supported model. Stale predictions are not explained as current."} action={<Button icon={Activity} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={requestExplanation}>{data.modelLoading?.explainability ? "Explaining..." : "Request explanation"}</Button>} />}</div>;
+  const isMoney = selected === "forecast";
+  const outcome = selected === "forecast"
+    ? result?.prediction != null && `Predicted spending for ${monthTitle(result.forecast_month)}: ${currency(result.prediction)}`
+    : selected === "categorization"
+      ? result?.prediction_label && `Chosen category: ${result.prediction_label}${result.confidence != null ? ` (${Math.round(result.confidence * 100)}% sure)` : ""}`
+      : result?.prediction_label && `Model verdict: ${result.prediction_label}`;
+
+  return <div className="page-stack">
+    <PageHeading eyebrow="Why did the AI decide this?" title="Explainable AI" description={info.intro} actions={<div className="heading-actions"><select className="select-button" aria-label="What to explain" value={selected} onChange={(event) => setSelected(event.target.value)}>{Object.entries(EXPLAIN_MODELS).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}</select><Button variant="outline" icon={RefreshCw} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={requestExplanation}>{data.modelLoading?.explainability ? "Explaining..." : "Explain"}</Button></div>} />
+    {ready ? <>
+      {result.is_historical && result.notice && <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{result.notice}</span></div>}
+      {rows.length > 0 && <section className="panel xai-summary">
+        <div className="xai-summary-head"><span className="insight-symbol"><BrainCircuit size={18} /></span><div><h2>What the AI decided</h2>{outcome && <p className="xai-outcome">{outcome}</p>}</div></div>
+        <ol className="xai-reasons">{rows.slice(0, 3).map((row) => <li key={row.label} className={row.shap_value >= 0 ? "up" : "down"}>{summarySentence(selected, row, result)}</li>)}</ol>
+        <small>These show how the model reached its answer from your data; they are not proof of cause{selected === "anomaly" ? " or of fraud" : ""}.</small>
+      </section>}
+      {rows.length > 0 && result.base_value != null && Number.isFinite(Number(result.base_value)) && <ChartCard title="Step by step" subtitle={isMoney ? "From a typical starting prediction to yours" : "From the model's starting score to this result"}><WaterfallChart rows={rows} baseValue={result.base_value} predictionValue={result.prediction_value ?? result.prediction ?? result.anomaly_score} format={(value) => isMoney ? currency(value) : Number(value).toFixed(3)} effect={(value) => effectText(selected, value)} /></ChartCard>}
+      <div className="explainability-grid">
+        <ChartCard title="What matters most overall" subtitle="Average influence across your data">{importance.length ? <FeatureImportanceChart data={importance} valueFormatter={(value) => isMoney ? currency(value) : Number(value).toFixed(3)} /> : <EmptyState title="Shown for single predictions only" description="This explanation covers one transaction; see the factors on the right." />}</ChartCard>
+        <ChartCard title="This prediction" subtitle={result.prediction_label || (result.forecast_month ? monthTitle(result.forecast_month) : "Single result")}>{rows.length ? <div className="contribution-list">{rows.slice(0, 8).map((row) => { const max = Math.max(...rows.map((item) => Math.abs(item.shap_value)), 1e-9); return <div className="contribution-row" key={row.label}><span title={row.feature}>{row.label}</span><div className="contribution-track"><i className={row.shap_value >= 0 ? "positive" : "negative"} style={{ width: `${Math.max(6, Math.abs(row.shap_value) / max * 100)}%` }} /></div><strong className={row.shap_value >= 0 ? "income-text" : "expense-text"}>{effectText(selected, row.shap_value)}</strong></div>; })}</div> : <EmptyState title="No single-prediction factors" description="Choose another model or request the explanation again." />}</ChartCard>
+      </div>
+      {rows.length > 0 && <FeatureTable rows={rows} model={selected} title="All factors" />}
+    </> : <EmptyState title={result?.status === "unavailable" ? "Explanation unavailable" : `Explain the ${info.label.toLowerCase()}`} description={result?.reason || data.explainabilityError || info.intro} action={<Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={requestExplanation}>{data.modelLoading?.explainability ? "Explaining..." : "Explain"}</Button>} />}
+  </div>;
 }
 
 export function SettingsPage({ settings = {}, mode, theme, onTheme, onSave, toast, onReset }) {

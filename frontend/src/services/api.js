@@ -30,7 +30,7 @@ export async function getResource(name, params = {}) {
     const periodParams = params.month ? { month: params.month } : {};
     const [summary, monthly, categories, transactions] = await Promise.all([
       api.get("/api/dashboard/summary", { params: periodParams }),
-      api.get("/api/dashboard/monthly-trends"),
+      api.get("/api/dashboard/monthly-trends", { params: periodParams }),
       api.get("/api/dashboard/category-breakdown", { params: periodParams }),
       api.get("/api/dashboard/activity"),
     ]);

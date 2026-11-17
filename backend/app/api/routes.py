@@ -117,10 +117,11 @@ def get_dashboard_periods(
 @router.get("/dashboard/monthly-trends")
 def get_monthly_trends(
     months: int = Query(default=12, ge=1, le=60),
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
     db: Session = Depends(get_db),
     user_id: str = Depends(_user_id),
 ) -> dict:
-    return finance.dashboard_monthly_trends(db, user_id, months)
+    return finance.dashboard_monthly_trends(db, user_id, months, month)
 
 
 @router.get("/dashboard/category-breakdown")

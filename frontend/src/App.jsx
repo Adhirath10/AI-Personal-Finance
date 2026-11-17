@@ -419,7 +419,7 @@ export default function App() {
     }
   }, [mode, notify]);
 
-  const executeModel = useCallback(async (modelName, payload = {}, label = "AI model", { quiet = false } = {}) => {
+  const executeModel = useCallback(async (modelName, payload = {}, label = "AI model", { quiet = false, reportErrors = false } = {}) => {
     if (mode !== "live") {
       notify(`${label} did not run: connect a live backend first.`, "error");
       return null;
@@ -478,13 +478,13 @@ export default function App() {
       } else if (modelName === "categorize") {
         notify("Category suggestions received; they have not been saved to your transactions.");
       } else if (result.is_historical) {
-        notify(`${label} completed using records through ${result.history_end_month || result.analysis_period?.selected_month}.`);
+        notify(`${label} updated using records through ${result.history_end_month || result.analysis_period?.selected_month}.`);
       } else {
-        notify(`${label} completed using the connected API.`);
+        notify(`${label} updated.`);
       }
       return result;
     } catch (error) {
-      if (!quiet) notify(`${label} failed: ${errorMessage(error)}`, "error");
+      if (!quiet || reportErrors) notify(`${label} failed: ${errorMessage(error)}`, "error");
       return null;
     } finally {
       setResourceLoading((current) => ({ ...current, [modelName]: false }));
@@ -506,7 +506,10 @@ export default function App() {
         executeModel("recommendations", {}, "Recommendations", { quiet: true }),
       ]);
       const parts = [];
-      if (forecast?.status === "available") parts.push(`forecast ${currency(forecast.predicted_expense)} for ${forecast.forecast_month}`);
+      const forecastMonth = forecast?.forecast_month
+        ? new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric" }).format(new Date(`${forecast.forecast_month}-01T00:00:00`))
+        : "";
+      if (forecast?.status === "available") parts.push(`forecast ${currency(forecast.predicted_expense)} for ${forecastMonth}`);
       if (insights?.items?.length) parts.push(`${insights.items.length} insights`);
       if (anomalies?.status === "available") parts.push(`${anomalies.anomaly_count} transactions to review`);
       if (recommendations?.items?.length) parts.push(`${recommendations.items.length} recommendations`);

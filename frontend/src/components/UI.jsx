@@ -86,12 +86,12 @@ export function SectionLink({ children, to }) {
   return <a className="section-link" href={to}>{children}<ChevronRight size={15} /></a>;
 }
 
-export function BudgetProgress({ budget, compact = false }) {
+export function BudgetProgress({ budget, compact = false, hideMeta = false }) {
   const ratio = budget.amount > 0 ? Math.round((budget.spent / budget.amount) * 100) : 0;
   const tone = ratio >= 100 ? "danger" : ratio >= 80 ? "warning" : "success";
   return (
     <div className={`budget-progress ${compact ? "compact" : ""}`}>
-      <div className="budget-meta"><span>{budget.category}</span><strong>{currency(budget.spent)} <small>of {currency(budget.amount)}</small></strong></div>
+      {!hideMeta && <div className="budget-meta"><span>{budget.category}</span><strong>{currency(budget.spent)} <small>of {currency(budget.amount)}</small></strong></div>}
       <div className={`progress-track ${tone}`}><span style={{ width: `${Math.min(ratio, 100)}%` }} /></div>
       {!compact && <div className="budget-bottom"><span>{percent(ratio)} used</span><span className={ratio >= 100 ? "text-danger" : ""}>{ratio >= 100 ? `${currency(budget.spent - budget.amount)} over` : `${currency(budget.amount - budget.spent)} left`}</span></div>}
     </div>

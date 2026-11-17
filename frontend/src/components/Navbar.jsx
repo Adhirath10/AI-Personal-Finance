@@ -174,7 +174,7 @@ export default function Navbar({
       </div>
       <div className="topbar-actions">
         <form className="global-search" role="search" onSubmit={(event) => { event.preventDefault(); onSearchSubmit(searchRef.current?.value || ""); }}>
-          <Search size={16} />
+          <button type="button" className="search-trigger" aria-label="Search transactions" onClick={() => onSearchSubmit(searchRef.current?.value || "")}><Search size={16} /></button>
           <input ref={searchRef} type="search" placeholder="Search transactions..." aria-label="Search transactions" onChange={(event) => onSearch(event.target.value)} />
           <kbd>{isMac ? "⌘ K" : "Ctrl K"}</kbd>
         </form>

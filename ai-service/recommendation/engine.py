@@ -1274,12 +1274,12 @@ class RecommendationEngine:
                 self._recommendation(
                     user_id,
                     f"Review spending above income for {month}",
-                    f"Recorded expenses exceeded recorded income in {month}. Review "
-                    "tracked discretionary expenses and upcoming commitments; this alert "
-                    "does not recommend reducing investments.",
+                    f"You spent more than you earned in {month}. Look at non-essential "
+                    "spending and upcoming bills first; this is not a suggestion to reduce "
+                    "investments.",
                     "overspending",
                     priority,
-                    "This month’s recorded expenses are greater than recorded income.",
+                    "This month’s spending is higher than its income.",
                     {
                         "month": month,
                         "income": income,
@@ -1322,16 +1322,16 @@ class RecommendationEngine:
                 overage = max(actual_amount - budget_amount, 0.0)
                 investment_budget = self._is_investment_category(category)
                 budget_description = (
-                    f"Recorded {category} allocations are above the stored budget. "
-                    "Review the allocation against your plan; this is not a suggestion "
-                    "to reduce investments."
+                    f"{category} contributions are above the budget you set. Check "
+                    "them against your plan; this is not a suggestion to reduce "
+                    "investments."
                     if investment_budget
                     else (
-                        f"Recorded {category} spending is above its budget. Review "
-                        "planned purchases in this discretionary category."
+                        f"{category} spending is above its budget. Hold back on "
+                        f"planned {category.lower()} purchases for the rest of the month."
                         if self._is_discretionary_category(category)
-                        else f"Recorded {category} spending is above its budget. "
-                        "Review the recorded commitments against the stored plan."
+                        else f"{category} spending is above its budget. Check upcoming "
+                        f"{category.lower()} payments against your plan."
                     )
                 )
                 recommendations.append(
@@ -1341,8 +1341,7 @@ class RecommendationEngine:
                         budget_description,
                         "budget_warning",
                         "High",
-                        "The stored budget is marked exceeded or actual spending "
-                        "is greater than the budget amount.",
+                        "Spending in this category is higher than its budget.",
                         {
                             "month": month,
                             "category": category,
@@ -1356,11 +1355,10 @@ class RecommendationEngine:
             elif utilization >= self.budget_warning_threshold:
                 budget_description = (
                     f"Investment allocations have used {utilization:.0%} of the "
-                    "recorded budget. Check planned contributions before changing "
-                    "the allocation."
+                    "budget. Check planned contributions before changing them."
                     if self._is_investment_category(category)
                     else f"{category} spending has used {utilization:.0%} of its "
-                    "recorded budget. Check planned expenses before spending more."
+                    "budget. Check what is still planned before spending more."
                 )
                 recommendations.append(
                     self._recommendation(
@@ -1369,8 +1367,8 @@ class RecommendationEngine:
                         budget_description,
                         "budget_warning",
                         "Medium",
-                        f"Budget utilization is at or above the configured "
-                        f"{self.budget_warning_threshold:.0%} warning level.",
+                        f"Spending has reached {self.budget_warning_threshold:.0%} "
+                        "or more of the budget.",
                         {
                             "month": month,
                             "category": category,
@@ -1461,9 +1459,9 @@ class RecommendationEngine:
                     self._recommendation(
                         user_id,
                         f"Review non-investment spending increase in {month}",
-                        "Recorded spending in tracked discretionary categories is "
-                        "higher than its recent average. Review those purchases; "
-                        "investment allocations are excluded.",
+                        "Spending on non-essentials (shopping, eating out, "
+                        "entertainment and similar) is higher than usual. Review those "
+                        "purchases; investments are not included.",
                         "expense_reduction",
                         "Medium",
                         "Tracked discretionary-category spending exceeds the average "
@@ -1637,12 +1635,12 @@ class RecommendationEngine:
                 self._recommendation(
                     user_id,
                     f"Review available surplus from {month}",
-                    f"Recorded income exceeded expenses in {month}. "
-                    "Consider retaining some of this observed surplus as savings.",
+                    f"You earned more than you spent in {month}. Consider moving "
+                    "some of the surplus into savings.",
                     "saving_opportunity",
                     "Low",
-                    "The recommendation is based on the positive difference between "
-                    "recorded monthly income and expenses.",
+                    "Based on the difference between this month’s income and "
+                    "spending.",
                     {
                         "month": month,
                         "monthly_surplus": available_surplus,

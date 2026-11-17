@@ -204,8 +204,9 @@ def dashboard_summary(db: Session, user_id: str, month: str | None = None) -> di
     }
 
 
-def dashboard_monthly_trends(db: Session, user_id: str, months: int = 12) -> dict:
-    period = analysis_period(db, user_id)
+def dashboard_monthly_trends(db: Session, user_id: str, months: int = 12, month: str | None = None) -> dict:
+    """Monthly totals for the months up to and including the dashboard's month."""
+    period = analysis_period(db, user_id, month)
     rows = db.execute(
         text(
             """
@@ -213,13 +214,13 @@ def dashboard_monthly_trends(db: Session, user_id: str, months: int = 12) -> dic
               SUM(CASE WHEN lower(transaction_type) = 'income' THEN amount ELSE 0 END) AS income,
               SUM(CASE WHEN lower(transaction_type) = 'expense' THEN amount ELSE 0 END) AS expenses
             FROM transactions
-            WHERE user_id = :user_id
+            WHERE user_id = :user_id AND substr(transaction_date, 1, 7) <= :until
             GROUP BY substr(transaction_date, 1, 7)
             ORDER BY month DESC
             LIMIT :months
             """
         ),
-        {"user_id": user_id, "months": months},
+        {"user_id": user_id, "months": months, "until": period["month"] if period else "9999-12"},
     ).mappings().all()
     items = [
         {
