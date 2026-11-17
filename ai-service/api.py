@@ -80,9 +80,83 @@ def _recommendation_engine():
     return module.RecommendationEngine(database_path=DATABASE_PATH)
 
 
-def _analysis(user_id: str) -> tuple[Any, dict[str, Any]]:
+def _analysis(
+    user_id: str,
+    *,
+    include_forecast: bool = True,
+    include_anomalies: bool = True,
+) -> tuple[Any, dict[str, Any]]:
     engine = _recommendation_engine()
-    return engine, engine.analyze_user(user_id)
+    return engine, engine.analyze_user(
+        user_id,
+        include_forecast=include_forecast,
+        include_anomalies=include_anomalies,
+    )
+
+
+def _unavailable(exc: Exception, **extra: Any) -> dict[str, Any]:
+    """Describe a failure in the response instead of returning a bare HTTP 500."""
+    reason = str(exc) or type(exc).__name__
+    return {"status": "unavailable", "reason": reason, **extra}
+
+
+def _forecast_model_metrics() -> dict[str, float]:
+    """Read the held-out MAE/RMSE/MAPE saved when the forecasting model was trained."""
+    report_path = MODEL_DIRS["forecasting"] / "evaluation_report.txt"
+    try:
+        lines = report_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    metrics: dict[str, float] = {}
+    in_model_section = False
+    for line in lines:
+        if line.startswith("Machine Learning Model"):
+            in_model_section = True
+            continue
+        if not in_model_section:
+            continue
+        name, separator, value = line.partition(":")
+        if not separator:
+            break
+        key = name.strip().casefold()
+        if key in {"mae", "rmse", "mape"}:
+            try:
+                metrics[key] = float(value.strip().rstrip("%"))
+            except ValueError:
+                continue
+    return metrics
+
+
+def _forecast_payload(analysis: dict[str, Any]) -> dict[str, Any]:
+    """Expose the engine forecast, labelling forecasts for months that have passed.
+
+    The project dataset is historical, so the month after the last recorded
+    month is usually already in the past. The engine marks that as ``stale`` so
+    it is not used for forward-looking recommendations, but the prediction is
+    still a valid model output and is returned with an explicit notice.
+    """
+    result = dict(analysis["forecast"])
+    result["analysis_period"] = analysis["analysis_period"]
+    result["model"] = "RandomForestRegressor"
+    status = result.get("status")
+    if status in {"available", "stale"}:
+        is_historical = status == "stale"
+        history_end = analysis["analysis_period"]["selected_month"]
+        result["status"] = "available"
+        result["is_historical"] = is_historical
+        result["history_end_month"] = history_end
+        result["skip_reason"] = None
+        result["notice"] = (
+            f"Recorded history ends in {history_end}, so this is the model's "
+            f"forecast for {result.get('forecast_month')}, a month that has "
+            "already passed. Add recent transactions to forecast an upcoming month."
+            if is_historical
+            else None
+        )
+        result.update(_forecast_model_metrics())
+    else:
+        result.setdefault("reason", result.get("skip_reason"))
+    return result
 
 
 def _explainability_module(model: str):
@@ -180,25 +254,28 @@ def categorize(body: CategorizeBody) -> dict[str, Any]:
 @app.get("/api/forecast")
 def forecast(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
     try:
-        _, analysis = _analysis(user_id)
-        result = dict(analysis["forecast"])
-        result["analysis_period"] = analysis["analysis_period"]
-        result["model"] = "RandomForestRegressor"
-        if result.get("status") == "stale":
-            result["predicted_expense"] = None
-        return result
+        _, analysis = _analysis(user_id, include_anomalies=False)
+        return _forecast_payload(analysis)
     except FileNotFoundError as exc:
-        return {"status": "unavailable", "reason": str(exc)}
-    except (ValueError, sqlite3.Error, OSError, ImportError) as exc:
+        return _unavailable(exc)
+    except Exception as exc:  # noqa: BLE001 - reported to the client
         logger.exception("Expense forecast could not be computed.")
-        return {"status": "unavailable", "reason": str(exc)}
+        return _unavailable(exc)
 
 
 @app.get("/api/anomalies")
 def anomalies(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
     try:
-        _, analysis = _analysis(user_id)
+        _, analysis = _analysis(user_id, include_forecast=False)
         result = analysis["potential_anomalies"]
+        if result.get("status") == "unavailable":
+            return {
+                "status": "unavailable",
+                "reason": result.get("skip_reason")
+                or "The saved anomaly detection model is unavailable.",
+                "analysis_period": analysis["analysis_period"],
+                "items": [],
+            }
         items = [
             {**item, "review_status": "Needs review"}
             for item in result.get("transactions", [])
@@ -216,10 +293,10 @@ def anomalies(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, A
             "notice": "Unusual transactions are statistical outliers requiring review, not confirmed fraud.",
         }
     except FileNotFoundError as exc:
-        return {"status": "unavailable", "reason": str(exc), "items": []}
-    except (ValueError, sqlite3.Error, OSError, ImportError) as exc:
+        return _unavailable(exc, items=[])
+    except Exception as exc:  # noqa: BLE001 - reported to the client
         logger.exception("Anomaly analysis could not be computed.")
-        return {"status": "unavailable", "reason": str(exc), "items": []}
+        return _unavailable(exc, items=[])
 
 
 @app.get("/api/recommendations")
@@ -236,16 +313,22 @@ def recommendations(user_id: str = Query(min_length=1, max_length=100)) -> dict[
             "items": items,
         }
     except FileNotFoundError as exc:
-        return {"status": "unavailable", "reason": str(exc), "items": []}
-    except (ValueError, sqlite3.Error, OSError, ImportError) as exc:
+        return _unavailable(exc, items=[])
+    except Exception as exc:  # noqa: BLE001 - reported to the client
         logger.exception("Recommendations could not be generated.")
-        return {"status": "unavailable", "reason": str(exc), "items": []}
+        return _unavailable(exc, items=[])
 
 
 @app.get("/api/insights")
 def insights(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
     try:
-        _, analysis = _analysis(user_id)
+        # Insights only compare recorded category spending, so they do not
+        # depend on (or wait for) the forecasting and anomaly models.
+        _, analysis = _analysis(
+            user_id,
+            include_forecast=False,
+            include_anomalies=False,
+        )
         items = []
         for row in analysis["category_trends"]:
             average = row.get("historical_average_category_spending")
@@ -279,16 +362,22 @@ def insights(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, An
             ),
             reverse=True,
         )
-        return {
+        result = {
             "status": "available" if items else "no_insights",
             "analysis_period": analysis["analysis_period"],
             "items": items,
         }
+        if not items:
+            result["reason"] = (
+                f"No category in {analysis['analysis_month']} has earlier recorded "
+                "spending to compare against yet."
+            )
+        return result
     except FileNotFoundError as exc:
-        return {"status": "unavailable", "reason": str(exc), "items": []}
-    except (ValueError, sqlite3.Error, OSError, ImportError) as exc:
+        return _unavailable(exc, items=[])
+    except Exception as exc:  # noqa: BLE001 - reported to the client
         logger.exception("Financial insights could not be computed.")
-        return {"status": "unavailable", "reason": str(exc), "items": []}
+        return _unavailable(exc, items=[])
 
 
 @app.get("/api/explanations")
@@ -301,12 +390,12 @@ def explanations(
 ) -> dict[str, Any]:
     try:
         if model == "forecast":
-            _, analysis = _analysis(user_id)
-            forecast_result = analysis["forecast"]
+            _, analysis = _analysis(user_id, include_anomalies=False)
+            forecast_result = _forecast_payload(analysis)
             if forecast_result.get("status") != "available":
                 return {
                     "status": forecast_result.get("status", "unavailable"),
-                    "reason": forecast_result.get("skip_reason"),
+                    "reason": forecast_result.get("reason"),
                     "analysis_period": analysis["analysis_period"],
                 }
             module = _explainability_module("forecasting")
@@ -331,6 +420,8 @@ def explanations(
                 "prediction_value": individual["prediction"],
                 "base_value": individual["base_value"],
                 "analysis_period": analysis["analysis_period"],
+                "is_historical": forecast_result["is_historical"],
+                "notice": forecast_result.get("notice"),
                 "feature_importance": [
                     {"feature": feature, "importance": value}
                     for feature, value in global_result["mean_absolute_shap"].items()
@@ -442,7 +533,7 @@ def explanations(
         raise
     except FileNotFoundError as exc:
         return {"status": "unavailable", "reason": str(exc)}
-    except (ValueError, OSError, ImportError, RuntimeError, sqlite3.Error) as exc:
+    except Exception as exc:  # noqa: BLE001 - reported to the client
         logger.exception("SHAP explanation could not be computed for model %s.", model)
         status = "stale" if "training cutoff" in str(exc).casefold() else "unavailable"
         return {"status": status, "reason": str(exc)}

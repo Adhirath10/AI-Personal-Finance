@@ -5,7 +5,9 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
-from train import build_monthly_expense_data, create_forecast_dataset
+from train import build_forecast_features, build_monthly_expense_data
+
+MIN_HISTORY_MONTHS = 3
 
 
 def load_model(model_dir: str | Path | None = None):
@@ -26,10 +28,16 @@ def predict_next_month_expense(user_id: str, database_path: str | Path | None = 
     if user_df.empty:
         raise ValueError(f"User ID not found or no expense history: {user_id}")
 
-    feature_dataset = create_forecast_dataset(monthly)
-    last_row = feature_dataset[feature_dataset["user_id"] == str(user_id)].sort_values("month").tail(1)
-    if last_row.empty:
-        raise ValueError(f"User {user_id} does not have enough historical data to forecast the next month.")
+    if len(user_df) < MIN_HISTORY_MONTHS:
+        raise ValueError(
+            f"User {user_id} does not have enough historical data to forecast the next month "
+            f"({len(user_df)} of {MIN_HISTORY_MONTHS} required expense months)."
+        )
+
+    # Use the latest recorded month as the model input so the forecast is for the
+    # month after it (the training dataset drops that row because its target is unknown).
+    feature_dataset = build_forecast_features(user_df)
+    last_row = feature_dataset.sort_values("month").tail(1)
 
     model, feature_columns = load_model(model_dir)
     features = last_row[feature_columns].iloc[[0]]

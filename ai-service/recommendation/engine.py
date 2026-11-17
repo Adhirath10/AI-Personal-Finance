@@ -649,10 +649,30 @@ class RecommendationEngine:
             "transactions": predictions,
         }
 
+    @staticmethod
+    def _run_model_step(label: str, step, *args) -> dict[str, Any]:
+        """Run one optional model so its failure cannot break the whole analysis.
+
+        Spending trends, budgets and goals are plain data analysis; an
+        incompatible or corrupt saved model should only mark that model as
+        unavailable instead of failing insights and recommendations too.
+        """
+        try:
+            return step(*args)
+        except Exception as exc:  # noqa: BLE001 - reported as model status
+            LOGGER.exception("%s failed; continuing without it.", label)
+            return {
+                "status": "unavailable",
+                "skip_reason": f"{label} failed: {type(exc).__name__}: {exc}",
+            }
+
     def analyze_user(
         self,
         user_id: str,
         analysis_month: str | pd.Period | None = None,
+        *,
+        include_forecast: bool = True,
+        include_anomalies: bool = True,
     ) -> dict[str, Any]:
         requested_user_id = str(user_id).strip()
         if not requested_user_id:
@@ -828,13 +848,19 @@ class RecommendationEngine:
             .sort_values(ascending=False)
         )
         category_trends = []
-        prior_month_window = transactions.loc[
+        # Compare with the most recent (up to three) earlier months that have
+        # recorded expenses. A fixed calendar window would leave nothing to compare
+        # when recorded history has a gap before the analysis month (for example,
+        # a new transaction added today after an older imported dataset).
+        prior_expense_rows = transactions.loc[
             (transactions["transaction_type_normalized"] == "expense")
             & (transactions["month"] < latest_month)
-            & (transactions["month"] >= latest_month - 3)
             & transactions["category_for_analysis"].notna()
         ]
-        observed_prior_months = sorted(prior_month_window["month"].unique())
+        observed_prior_months = sorted(prior_expense_rows["month"].unique())[-3:]
+        prior_month_window = prior_expense_rows.loc[
+            prior_expense_rows["month"].isin(observed_prior_months)
+        ]
         for category, current_amount in category_spending.items():
             prior_category_rows = prior_month_window.loc[
                 prior_month_window["category_for_analysis"] == category
@@ -861,10 +887,32 @@ class RecommendationEngine:
             budgets = budgets[budgets["month"] == latest_month].copy()
         goals = data["goals"].copy()
         profiles = data["users"].copy()
-        forecast = self._forecast_user_expenses(
-            transactions, profiles, selected_period
-        )
-        anomaly_results = self._score_potential_anomalies(transactions)
+        if include_forecast:
+            forecast = self._run_model_step(
+                "Expense forecast",
+                self._forecast_user_expenses,
+                transactions,
+                profiles,
+                selected_period,
+            )
+        else:
+            forecast = {
+                "status": "not_requested",
+                "skip_reason": "The expense forecast was not requested for this analysis.",
+            }
+        if include_anomalies:
+            anomaly_results = self._run_model_step(
+                "Anomaly detection",
+                self._score_potential_anomalies,
+                transactions,
+            )
+            anomaly_results.setdefault("transactions", [])
+        else:
+            anomaly_results = {
+                "status": "not_requested",
+                "skip_reason": "Anomaly detection was not requested for this analysis.",
+                "transactions": [],
+            }
         goals_out = []
         for row in goals.to_dict(orient="records"):
             goals_out.append(

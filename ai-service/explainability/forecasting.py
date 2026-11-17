@@ -58,7 +58,9 @@ def _forecast_feature_rows(
     feature_columns: list[str],
 ) -> pd.DataFrame:
     monthly = _training.build_monthly_expense_data(database_path)
-    dataset = _training.create_forecast_dataset(monthly)
+    # Keep each user's latest month: it is the input for the actual next-month
+    # forecast, so dropping it would explain a prediction for a month already recorded.
+    dataset = _training.build_forecast_features(monthly)
     missing = [column for column in feature_columns if column not in dataset.columns]
     if missing:
         raise ValueError(f"Forecast input data is missing features: {missing}.")

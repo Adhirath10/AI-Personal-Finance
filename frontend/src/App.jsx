@@ -374,14 +374,21 @@ export default function App() {
         }
         return current;
       });
+      const reason = result.reason || result.skip_reason;
       if (result.status === "unavailable") {
-        notify(`${label} unavailable: ${result.reason || "The model did not return results."}`, "error");
+        notify(`${label} unavailable: ${reason || "The model did not return results."}`, "error");
+      } else if (result.status === "insufficient_history") {
+        notify(`${label} needs more history: ${reason || "Not enough recorded months."}`, "error");
       } else if (result.status === "stale") {
-        notify(`${label} is stale; no current prediction is shown.`, "error");
+        notify(`${label} is stale: ${reason || "no current prediction is shown."}`, "error");
+      } else if (result.status === "no_insights") {
+        notify(`${label}: ${reason || "No spending changes were found for the latest recorded month."}`);
+      } else if (modelName === "categorize") {
+        notify("Category suggestions received; they have not been saved to your transactions.");
+      } else if (result.is_historical) {
+        notify(`${label} completed using records through ${result.history_end_month || result.analysis_period?.selected_month}.`);
       } else {
-        notify(modelName === "categorize"
-          ? "Category suggestions received; they have not been saved to your transactions."
-          : `${label} completed using the connected API.`);
+        notify(`${label} completed using the connected API.`);
       }
       return result;
     } catch (error) {

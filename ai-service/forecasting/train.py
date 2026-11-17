@@ -76,8 +76,14 @@ def build_monthly_expense_data(database_path: str | Path | None = None) -> pd.Da
     return monthly[["user_id", "month", "total_expense"]]
 
 
-def create_forecast_dataset(monthly_df: pd.DataFrame) -> pd.DataFrame:
-    """Build a no-leakage feature set for next-month expense prediction using only lagged historical information."""
+def build_forecast_features(monthly_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute lagged forecast features for every user-month, including the latest month.
+
+    Each row describes the history up to and including ``month`` and is used to
+    predict the following month. ``target_expense`` is NaN for each user's latest
+    month because that next month has not been observed yet; those rows are the
+    inputs for an actual next-month forecast.
+    """
     if monthly_df.empty:
         raise ValueError("Empty monthly expense dataset.")
 
@@ -91,12 +97,17 @@ def create_forecast_dataset(monthly_df: pd.DataFrame) -> pd.DataFrame:
     monthly_df["rolling_6"] = monthly_df.groupby("user_id")["total_expense"].transform(lambda s: s.rolling(window=6, min_periods=1).mean())
     monthly_df["spending_change"] = monthly_df.groupby("user_id")["total_expense"].pct_change().fillna(0)
     monthly_df["target_expense"] = monthly_df.groupby("user_id")["total_expense"].shift(-1)
-    monthly_df = monthly_df.dropna(subset=["target_expense"]).copy()
 
     for column in ["previous_1", "previous_2", "previous_3", "rolling_3", "rolling_6", "spending_change"]:
         monthly_df[column] = monthly_df[column].replace([np.inf, -np.inf], np.nan).fillna(0)
 
     return monthly_df
+
+
+def create_forecast_dataset(monthly_df: pd.DataFrame) -> pd.DataFrame:
+    """Build a no-leakage feature set for next-month expense prediction using only lagged historical information."""
+    features = build_forecast_features(monthly_df)
+    return features.dropna(subset=["target_expense"]).copy()
 
 
 def moving_average_baseline(train_df: pd.DataFrame, test_df: pd.DataFrame) -> pd.Series:
