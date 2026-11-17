@@ -260,3 +260,63 @@ def test_missing_database_path_is_not_created(tmp_path, monkeypatch):
 
     assert error.value.status_code == 503
     assert not missing_database.exists()
+
+
+def test_newer_income_only_month_does_not_become_the_dashboard_period(client):
+    salary = client.post(
+        "/api/transactions",
+        json={
+            "description": "salary",
+            "merchant": "company",
+            "date": "2026-01-01",
+            "category": "Income",
+            "amount": 50000,
+            "balance_after_transaction": 53500,
+            "type": "Income",
+        },
+    )
+    assert salary.status_code == 201
+
+    summary = client.get("/api/dashboard/summary").json()
+    assert summary["analysis_period"]["month"] == "2025-12"
+    assert summary["analysis_period"]["latest_transaction_month"] == "2026-01"
+    assert summary["analysis_period"]["is_default"] is True
+    assert summary["expenses"] == 1500
+    categories = client.get("/api/dashboard/category-breakdown").json()
+    assert [item["name"] for item in categories["items"]] == ["Food"]
+
+    periods = client.get("/api/dashboard/periods").json()
+    assert periods["default_month"] == "2025-12"
+    assert [item["month"] for item in periods["items"]] == ["2026-01", "2025-12"]
+    assert periods["items"][0] == {
+        "month": "2026-01",
+        "income": 50000,
+        "expenses": 0,
+        "transaction_count": 1,
+    }
+
+
+def test_dashboard_month_can_be_selected(client):
+    client.post(
+        "/api/transactions",
+        json={
+            "description": "salary",
+            "merchant": "company",
+            "date": "2026-01-01",
+            "category": "Income",
+            "amount": 50000,
+            "balance_after_transaction": 53500,
+            "type": "Income",
+        },
+    )
+
+    january = client.get("/api/dashboard/summary", params={"month": "2026-01"}).json()
+    assert january["analysis_period"]["month"] == "2026-01"
+    assert january["analysis_period"]["is_default"] is False
+    assert january["income"] == 50000
+    assert january["expenses"] == 0
+    assert client.get(
+        "/api/dashboard/category-breakdown", params={"month": "2026-01"}
+    ).json()["items"] == []
+    assert client.get("/api/dashboard/summary", params={"month": "2026-13"}).status_code == 422
+    assert client.get("/api/ai/insights", params={"month": "Jan 2026"}).status_code == 422

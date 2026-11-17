@@ -24,6 +24,7 @@ from ..services import finance
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+MONTH_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
 
 
 def _user_id(db: Session = Depends(get_db)) -> str:
@@ -38,7 +39,7 @@ async def _ai_request(
     params: dict | None = None,
     payload: dict | None = None,
 ) -> dict:
-    query = dict(params or {})
+    query = {key: value for key, value in (params or {}).items() if value is not None}
     if user_id is not None:
         query["user_id"] = user_id
     try:
@@ -98,10 +99,19 @@ async def _ai_request(
 
 @router.get("/dashboard/summary")
 def get_dashboard_summary(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
     db: Session = Depends(get_db),
     user_id: str = Depends(_user_id),
 ) -> dict:
-    return finance.dashboard_summary(db, user_id)
+    return finance.dashboard_summary(db, user_id, month)
+
+
+@router.get("/dashboard/periods")
+def get_dashboard_periods(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(_user_id),
+) -> dict:
+    return finance.dashboard_periods(db, user_id)
 
 
 @router.get("/dashboard/monthly-trends")
@@ -115,10 +125,11 @@ def get_monthly_trends(
 
 @router.get("/dashboard/category-breakdown")
 def get_category_breakdown(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
     db: Session = Depends(get_db),
     user_id: str = Depends(_user_id),
 ) -> dict:
-    return finance.dashboard_category_breakdown(db, user_id)
+    return finance.dashboard_category_breakdown(db, user_id, month)
 
 
 @router.get("/dashboard/recent-transactions")
@@ -298,23 +309,43 @@ async def categorize(payload: CategorizeRequest) -> dict:
 
 
 @router.get("/ai/forecast")
-async def get_forecast(user_id: str = Depends(_user_id)) -> dict:
-    return await _ai_request("GET", "/api/forecast", user_id=user_id)
+async def get_forecast(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
+    user_id: str = Depends(_user_id),
+) -> dict:
+    return await _ai_request(
+        "GET", "/api/forecast", user_id=user_id, params={"analysis_month": month}
+    )
 
 
 @router.get("/ai/anomalies")
-async def get_anomalies(user_id: str = Depends(_user_id)) -> dict:
-    return await _ai_request("GET", "/api/anomalies", user_id=user_id)
+async def get_anomalies(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
+    user_id: str = Depends(_user_id),
+) -> dict:
+    return await _ai_request(
+        "GET", "/api/anomalies", user_id=user_id, params={"analysis_month": month}
+    )
 
 
 @router.get("/ai/recommendations")
-async def get_recommendations(user_id: str = Depends(_user_id)) -> dict:
-    return await _ai_request("GET", "/api/recommendations", user_id=user_id)
+async def get_recommendations(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
+    user_id: str = Depends(_user_id),
+) -> dict:
+    return await _ai_request(
+        "GET", "/api/recommendations", user_id=user_id, params={"analysis_month": month}
+    )
 
 
 @router.get("/ai/insights")
-async def get_insights(user_id: str = Depends(_user_id)) -> dict:
-    return await _ai_request("GET", "/api/insights", user_id=user_id)
+async def get_insights(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
+    user_id: str = Depends(_user_id),
+) -> dict:
+    return await _ai_request(
+        "GET", "/api/insights", user_id=user_id, params={"analysis_month": month}
+    )
 
 
 @router.get("/ai/explanations")
@@ -323,6 +354,7 @@ async def get_explanations(
     transaction_id: str | None = Query(default=None, max_length=100),
     description: str | None = Query(default=None, max_length=500),
     merchant: str | None = Query(default=None, max_length=200),
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
     user_id: str = Depends(_user_id),
 ) -> dict:
     return await _ai_request(
@@ -330,6 +362,7 @@ async def get_explanations(
         "/api/explanations",
         user_id=user_id,
         params={
+            "analysis_month": month,
             "model": model,
             "transaction_id": transaction_id,
             "description": description,

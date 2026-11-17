@@ -67,6 +67,13 @@ def _forecast_feature_rows(
     return dataset
 
 
+def _rows_through(dataset: pd.DataFrame, through_month: str | None) -> pd.DataFrame:
+    """Keep feature rows up to ``through_month``; each row only uses earlier months."""
+    if through_month is None:
+        return dataset
+    return dataset.loc[dataset["month"] <= pd.Period(through_month, freq="M")]
+
+
 def _build_explainer(model: Any):
     shap = require_shap()
     return shap.TreeExplainer(
@@ -82,12 +89,16 @@ def explain_forecast_for_user(
     database_path: str | Path | None = None,
     model_dir: str | Path | None = None,
     output_dir: str | Path | None = None,
+    through_month: str | None = None,
 ) -> dict[str, Any]:
     if not str(user_id).strip():
         raise ValueError("User ID cannot be empty.")
     model, feature_columns = load_forecast_artifacts(model_dir)
     dataset = _forecast_feature_rows(database_path, feature_columns)
-    user_rows = dataset.loc[dataset["user_id"].astype(str) == str(user_id)].copy()
+    user_rows = _rows_through(
+        dataset.loc[dataset["user_id"].astype(str) == str(user_id)],
+        through_month,
+    ).copy()
     if user_rows.empty:
         raise ValueError(f"User {user_id} has no eligible forecast history.")
     last_row = user_rows.sort_values("month").tail(1)
@@ -141,9 +152,12 @@ def explain_forecast_global(
     output_dir: str | Path | None = None,
     user_id: str | None = None,
     max_rows: int = 500,
+    through_month: str | None = None,
 ) -> dict[str, Any]:
     model, feature_columns = load_forecast_artifacts(model_dir)
-    dataset = _forecast_feature_rows(database_path, feature_columns)
+    dataset = _rows_through(
+        _forecast_feature_rows(database_path, feature_columns), through_month
+    )
     if user_id is not None:
         dataset = dataset.loc[dataset["user_id"].astype(str) == str(user_id)]
     if dataset.empty:

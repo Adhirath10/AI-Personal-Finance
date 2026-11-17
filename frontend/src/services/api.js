@@ -17,6 +17,7 @@ export const resourcePaths = {
   budgets: "/api/budgets",
   goals: "/api/goals",
   explainability: "/api/ai/explanations",
+  periods: "/api/dashboard/periods",
 };
 
 export async function checkBackend() {
@@ -26,10 +27,11 @@ export async function checkBackend() {
 
 export async function getResource(name, params = {}) {
   if (name === "overview") {
+    const periodParams = params.month ? { month: params.month } : {};
     const [summary, monthly, categories, transactions] = await Promise.all([
-      api.get("/api/dashboard/summary"),
+      api.get("/api/dashboard/summary", { params: periodParams }),
       api.get("/api/dashboard/monthly-trends"),
-      api.get("/api/dashboard/category-breakdown"),
+      api.get("/api/dashboard/category-breakdown", { params: periodParams }),
       api.get("/api/dashboard/activity"),
     ]);
     const activity = transactions.data;

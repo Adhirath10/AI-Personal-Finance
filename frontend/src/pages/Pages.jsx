@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowDownRight,
@@ -52,7 +52,7 @@ import {
 } from "../components/UI";
 import TransactionTable from "../components/TransactionTable";
 import { ExpenseDonut, FeatureImportanceChart, IncomeExpenseChart, SpendingLineChart } from "../components/Charts";
-import { currency, percent, shortDate } from "../utils/format";
+import { currency, percent, ratioPercent, shortDate } from "../utils/format";
 
 function ChartLegend({ items }) {
   return <div className="chart-legend">{items.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}</span>)}</div>;
@@ -73,7 +73,7 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate }) 
   return (
     <div className="page-stack">
       <PageHeading eyebrow={period ? `Recorded period · ${period}` : "Recorded financial data"} title="Financial overview" description="A database-derived view of your recorded income, expenses and plans." actions={<><button className="button button-outline" onClick={() => window.print()}><Download size={15} />Export report</button><button className="button button-primary" onClick={() => onNavigate("/transactions")}><Plus size={16} />Add transaction</button></>} />
-      {period && overview.analysis_period?.status === "historical" && <div className="info-strip"><CircleAlert size={16} /><span>Showing historical records through {overview.analysis_period.latest_transaction_date}. This is not current live financial activity.</span></div>}
+      {period && <PeriodNote period={overview.analysis_period} />}
       {mode === "live" && data.overviewError && <div className="inline-warning"><CircleAlert size={16} />{data.overviewError}</div>}
       <div className="summary-grid">
         <SummaryCard label="Recorded income" value={overview.income ?? "—"} change={overview.incomeChange ?? undefined} icon={ArrowDownRight} tone="blue" helper={period ? `for ${period}` : "no transaction history"} />
@@ -109,6 +109,14 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate }) 
       </div>
     </div>
   );
+}
+
+function PeriodNote({ period }) {
+  const newerIncomeOnly = period.is_default && period.latest_transaction_month && period.latest_transaction_month !== period.month;
+  if (!newerIncomeOnly && period.status !== "historical") return null;
+  return <div className="info-strip"><CircleAlert size={16} /><span>{newerIncomeOnly
+    ? `Showing ${period.month}, the latest month with recorded expenses. Transactions in ${period.latest_transaction_month} contain no expenses yet. Use the month picker at the top to switch periods.`
+    : `Showing recorded data for ${period.month}. This is not current live financial activity.`}</span></div>;
 }
 
 function hasMeaningfulNumber(value) {
@@ -157,8 +165,13 @@ function formatRecommendationSupportValue(name, value) {
     return currency(value);
   }
 
-  if (/(utilization|ratio|rate|percentage|progress|change)/i.test(name) && hasMeaningfulNumber(value)) {
+  if (/percentage/i.test(name) && hasMeaningfulNumber(value)) {
     return percent(value);
+  }
+
+  // The recommendation engine reports rates, ratios and utilization as fractions.
+  if (/(utilization|ratio|rate|progress|change)/i.test(name) && hasMeaningfulNumber(value)) {
+    return ratioPercent(value);
   }
 
   return String(value);
@@ -232,8 +245,8 @@ export function TransactionsPage({
       {data.transactionsError && <div className="inline-warning"><CircleAlert size={16} />{data.transactionsError}</div>}
       <div className="summary-grid summary-grid-small">
         <SummaryCard label="Matching transactions" value={total} format="number" icon={Activity} tone="blue" helper="for selected filters" />
-        <SummaryCard label="Income in latest period" value={data.overview?.income ?? "—"} icon={ArrowDownRight} tone="mint" helper={data.overview?.analysis_period?.month || "stored data"} />
-        <SummaryCard label="Expenses in latest period" value={data.overview?.expenses ?? "—"} icon={ArrowUpRight} tone="rose" helper={data.overview?.analysis_period?.month || "stored data"} />
+        <SummaryCard label="Income in period" value={data.overview?.income ?? "—"} icon={ArrowDownRight} tone="mint" helper={data.overview?.analysis_period?.month || "stored data"} />
+        <SummaryCard label="Expenses in period" value={data.overview?.expenses ?? "—"} icon={ArrowUpRight} tone="rose" helper={data.overview?.analysis_period?.month || "stored data"} />
       </div>
       <section className="panel transactions-panel">
         <div className="filter-toolbar">
@@ -324,19 +337,38 @@ export function GoalsPage({ data, mode, onSave, onDelete }) {
 export function SimulatorPage({ data, mode }) {
   const [income, setIncome] = useState(0);
   const [expenses, setExpenses] = useState({});
+  const [edited, setEdited] = useState(false);
+  const baselineMonth = data.overview?.analysis_period?.month || null;
+  const baselineIncome = Number(data.overview?.income || 0);
+  // Compare by value: the dashboard refreshes every 30 seconds and on window
+  // focus, which creates new arrays even when nothing changed.
+  const baselineKey = JSON.stringify([
+    baselineMonth,
+    baselineIncome,
+    (data.categories || []).map((item) => [item.name, Number(item.value || 0)]),
+  ]);
+  const applyBaseline = () => {
+    const [, nextIncome, categoryValues] = JSON.parse(baselineKey);
+    setIncome(nextIncome);
+    setExpenses(Object.fromEntries(categoryValues));
+    setEdited(false);
+  };
+  const appliedBaseline = useRef({ key: null, month: null });
   useEffect(() => {
-    if (mode === "live") {
-      setIncome(Number(data.overview?.income || 0));
-      setExpenses(Object.fromEntries(
-        (data.categories || []).map((item) => [item.name, Number(item.value || 0)]),
-      ));
-    }
-  }, [mode, data.overview?.income, data.categories]);
+    if (mode !== "live" || appliedBaseline.current.key === baselineKey) return;
+    // Keep the user's scenario when the same month's data merely refreshes;
+    // start over when a different month is selected.
+    if (!edited || appliedBaseline.current.month !== baselineMonth) applyBaseline();
+    appliedBaseline.current = { key: baselineKey, month: baselineMonth };
+  }, [mode, baselineKey]);
   const values = Object.values(expenses);
   const total = values.reduce((sum, value) => sum + Number(value), 0);
   const balance = Number(income) - total;
-  const updateExpense = (category, value) => setExpenses((current) => ({ ...current, [category]: Number(value) }));
-  return <div className="page-stack"><PageHeading eyebrow={data.overview?.analysis_period?.month ? `Starting values · ${data.overview.analysis_period.month}` : "Explore the possibilities"} title="What-if simulator" description="Adjust the recorded baseline and compare a hypothetical monthly cash flow." actions={<Button variant="outline" icon={RefreshCw} onClick={() => { setIncome(Number(data.overview?.income || 0)); setExpenses(Object.fromEntries((data.categories || []).map((item) => [item.name, Number(item.value || 0)]))); }}>Reset scenario</Button>} /><div className="simulator-layout"><section className="panel simulator-controls"><div className="panel-heading"><div><h2>Monthly assumptions</h2><p>Changes stay in this browser session; baseline uses recorded values.</p></div></div><label className="sim-input-label">Monthly income <strong>{currency(income)}</strong><input type="range" min="0" max="1000000" step="5000" value={income} onChange={(event) => setIncome(Number(event.target.value))} /><div className="range-values"><span>₹0</span><span>₹10L</span></div></label><div className="sim-category-list">{Object.entries(expenses).map(([category, amount]) => <label key={category} className="sim-category"><span>{category}</span><div><span>₹</span><input type="number" min="0" step="500" value={amount} onChange={(event) => updateExpense(category, event.target.value)} /></div></label>)}{!Object.keys(expenses).length && <EmptyState title="No expense baseline" description="Transaction category values will appear here when the backend returns recorded expenses." />}</div></section><section className="simulator-results"><article className="sim-balance-card"><span>Hypothetical monthly balance</span><strong className={balance < 0 ? "text-danger" : ""}>{currency(balance)}</strong><p>{balance < 0 ? "Expenses exceed income in this scenario." : "This is what remains after planned expenses."}</p><div className="sim-balance-bar"><span style={{ width: `${Math.min(100, Math.max(0, balance / Math.max(income, 1) * 100))}%` }} /></div></article><div className="panel sim-breakdown"><h3>Scenario breakdown</h3><MiniMetric icon={Banknote} label="Monthly income" value={currency(income)} tone="blue" /><MiniMetric icon={ArrowUpRight} label="Total expenses" value={currency(total)} tone="rose" /><MiniMetric icon={Wallet} label="Potential savings" value={currency(Math.max(balance, 0))} tone="mint" /><MiniMetric icon={PieChart} label="Savings rate" value={percent(income ? Math.max(balance, 0) / income * 100 : 0)} tone="amber" /><div className="sim-disclaimer"><InfoText />Illustrative calculation only. This simulator does not call an AI model or alter your budget.</div></div></section></div></div>;
+  const updateExpense = (category, value) => {
+    setEdited(true);
+    setExpenses((current) => ({ ...current, [category]: Math.max(0, Number(value) || 0) }));
+  };
+  return <div className="page-stack"><PageHeading eyebrow={data.overview?.analysis_period?.month ? `Starting values · ${data.overview.analysis_period.month}` : "Explore the possibilities"} title="What-if simulator" description="Adjust the recorded baseline and compare a hypothetical monthly cash flow." actions={<Button variant="outline" icon={RefreshCw} onClick={applyBaseline}>Reset scenario</Button>} /><div className="simulator-layout"><section className="panel simulator-controls"><div className="panel-heading"><div><h2>Monthly assumptions</h2><p>Changes stay in this browser session; baseline uses recorded values.</p></div></div><label className="sim-input-label">Monthly income <strong>{currency(income)}</strong><input type="range" min="0" max="1000000" step="5000" value={income} onChange={(event) => { setEdited(true); setIncome(Number(event.target.value)); }} /><div className="range-values"><span>₹0</span><span>₹10L</span></div></label><div className="sim-category-list">{Object.entries(expenses).map(([category, amount]) => <label key={category} className="sim-category"><span>{category}</span><div><span>₹</span><input type="number" min="0" step="500" value={amount} onChange={(event) => updateExpense(category, event.target.value)} /></div></label>)}{!Object.keys(expenses).length && <EmptyState title="No expense baseline" description="Transaction category values will appear here when the backend returns recorded expenses." />}</div></section><section className="simulator-results"><article className="sim-balance-card"><span>Hypothetical monthly balance</span><strong className={balance < 0 ? "text-danger" : ""}>{currency(balance)}</strong><p>{balance < 0 ? "Expenses exceed income in this scenario." : "This is what remains after planned expenses."}</p><div className="sim-balance-bar"><span style={{ width: `${Math.min(100, Math.max(0, balance / Math.max(income, 1) * 100))}%` }} /></div></article><div className="panel sim-breakdown"><h3>Scenario breakdown</h3><MiniMetric icon={Banknote} label="Monthly income" value={currency(income)} tone="blue" /><MiniMetric icon={ArrowUpRight} label="Total expenses" value={currency(total)} tone="rose" /><MiniMetric icon={Wallet} label="Potential savings" value={currency(Math.max(balance, 0))} tone="mint" /><MiniMetric icon={PieChart} label="Savings rate" value={ratioPercent(income ? Math.max(balance, 0) / income : 0)} tone="amber" /><div className="sim-disclaimer"><InfoText />Illustrative calculation only. This simulator does not call an AI model or alter your budget.</div></div></section></div></div>;
 }
 
 function FeatureTable({ rows, title }) {

@@ -107,6 +107,18 @@ kbd { padding: 2px 5px; color: #9ba5b6; font-size: 9px; white-space: nowrap; bac
 .connection-pill.live .connection-dot { background: #32b78b; box-shadow: 0 0 0 3px #32b78b20; }
 .connection-pill.demo .connection-dot { background: #e8a23c; }
 .date-select { display: flex; align-items: center; gap: 7px; padding: 8px 10px; color: var(--text); font-size: 10px; white-space: nowrap; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.date-select:hover:not(:disabled), .date-select[aria-expanded="true"] { color: var(--blue); border-color: #c9d4fb; }
+.date-select:disabled { cursor: default; opacity: .7; }
+.period-picker { position: relative; }
+.period-menu { position: absolute; z-index: 40; top: calc(100% + 8px); right: 0; width: 264px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 14px 34px #0f1b3a29; }
+.period-menu-head { padding: 7px 9px 6px; color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .45px; text-transform: uppercase; }
+.period-menu-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.period-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 8px 9px; color: var(--text); text-align: left; background: transparent; border: 0; border-radius: 8px; }
+.period-option:hover, .period-option:focus-visible { background: var(--surface-subtle); outline: none; }
+.period-option.selected { color: var(--blue); background: var(--blue-soft); }
+.period-option-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.period-option-main strong { font-size: 11px; font-weight: 640; }
+.period-option-main small { overflow: hidden; color: var(--muted); font-size: 9.5px; white-space: nowrap; text-overflow: ellipsis; }
 .profile-button { display: flex; align-items: center; gap: 7px; padding: 0; color: #7d899d; background: transparent; border: 0; }
 .profile-avatar { width: 31px; height: 31px; color: #435b9c; background: #e6ecff; border-radius: 50%; }
 .profile-avatar.large { width: 46px; height: 46px; font-size: 13px; }

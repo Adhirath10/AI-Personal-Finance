@@ -33,7 +33,28 @@ const resourceNames = [
   "transactionCategories",
   "budgets",
   "goals",
+  "periods",
 ];
+
+// AI results belong to the month they were computed for.
+const monthScopedResults = {
+  forecast: undefined,
+  insights: undefined,
+  anomalies: undefined,
+  recommendations: undefined,
+  recommendationsPeriod: undefined,
+  explainability: undefined,
+};
+
+function overviewFields(result) {
+  return {
+    overview: result,
+    monthly: result.monthly || [],
+    categories: result.categories || [],
+    recentTransactions: result.transactions || [],
+    activity: result.activity || null,
+  };
+}
 
 function normalizeResource(name, payload) {
   if (name === "transactions" || name === "budgets" || name === "goals" || name === "recommendations" || name === "insights") {
@@ -70,6 +91,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState(null);
   const [toastKind, setToastKind] = useState("success");
+  const [selectedMonth, setSelectedMonth] = useState(null);
+  const selectedMonthRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -87,18 +110,17 @@ export default function App() {
     try {
       await checkBackend();
       setMode("live");
-      const results = await Promise.allSettled(resourceNames.map((name) => getResource(name)));
+      const results = await Promise.allSettled(resourceNames.map((name) => getResource(
+        name,
+        name === "overview" && selectedMonthRef.current ? { month: selectedMonthRef.current } : {},
+      )));
       const nextData = {};
       const errors = {};
       results.forEach((result, index) => {
         const name = resourceNames[index];
         if (result.status === "fulfilled") {
           if (name === "overview") {
-            nextData.overview = result.value;
-            nextData.monthly = result.value.monthly || [];
-            nextData.categories = result.value.categories || [];
-            nextData.recentTransactions = result.value.transactions || [];
-            nextData.activity = result.value.activity || null;
+            Object.assign(nextData, overviewFields(result.value));
           } else if (name === "transactions") {
             nextData.transactions = normalizeResource(name, result.value);
             nextData.transactionMeta = {
@@ -194,9 +216,10 @@ export default function App() {
     refreshInFlight.current = true;
     setRefreshing(true);
     try {
-      const [overviewResult, budgetsResult] = await Promise.allSettled([
-        getResource("overview"),
+      const [overviewResult, budgetsResult, periodsResult] = await Promise.allSettled([
+        getResource("overview", selectedMonthRef.current ? { month: selectedMonthRef.current } : {}),
         getResource("budgets"),
+        getResource("periods"),
       ]);
       setResourceErrors((current) => {
         const next = { ...current };
@@ -213,15 +236,10 @@ export default function App() {
         return next;
       });
       if (overviewResult.status === "fulfilled") {
-        const result = overviewResult.value;
-        setData((current) => ({
-          ...current,
-          overview: result,
-          monthly: result.monthly || [],
-          categories: result.categories || [],
-          recentTransactions: result.transactions || [],
-          activity: result.activity || null,
-        }));
+        setData((current) => ({ ...current, ...overviewFields(overviewResult.value) }));
+      }
+      if (periodsResult.status === "fulfilled") {
+        setData((current) => ({ ...current, periods: periodsResult.value }));
       }
       if (budgetsResult.status === "fulfilled") {
         setData((current) => ({
@@ -252,6 +270,29 @@ export default function App() {
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [loading, mode, refreshLiveData]);
+
+  const changeMonth = useCallback(async (month) => {
+    const next = month || null;
+    if (next === selectedMonthRef.current) return;
+    selectedMonthRef.current = next;
+    setSelectedMonth(next);
+    setData((current) => ({ ...current, ...monthScopedResults }));
+    try {
+      const result = await getResource("overview", next ? { month: next } : {});
+      if (selectedMonthRef.current !== next) return;
+      setData((current) => ({ ...current, ...overviewFields(result) }));
+      setResourceErrors((current) => {
+        const { overviewError, ...rest } = current;
+        return rest;
+      });
+    } catch (error) {
+      if (selectedMonthRef.current !== next) return;
+      setResourceErrors((current) => ({
+        ...current,
+        overviewError: `Period change failed: ${errorMessage(error)}`,
+      }));
+    }
+  }, []);
 
   const saveResource = useCallback(async (resource, payload, id) => {
     if (resource === "settings") {
@@ -340,7 +381,11 @@ export default function App() {
     }
     setResourceLoading((current) => ({ ...current, [modelName]: true }));
     try {
-      const result = await runModel(modelName, payload);
+      const month = selectedMonthRef.current;
+      const result = await runModel(
+        modelName,
+        modelName === "categorize" || !month ? payload : { ...payload, month },
+      );
       setData((current) => {
         if (modelName === "forecast") {
           return {
@@ -408,7 +453,6 @@ export default function App() {
     }
   };
 
-  const handleDate = () => navigate("/transactions");
   const handleNotifications = () => notify("Notifications are not available because no backend notifications API is configured.", "error");
   const handleProfile = () => navigate("/settings");
   const themeToggle = () => setTheme((value) => value === "light" ? "dark" : "light");
@@ -430,10 +474,12 @@ export default function App() {
           onTheme={themeToggle}
           theme={theme}
           mode={mode}
-          onDate={handleDate}
           onNotifications={handleNotifications}
           onProfile={handleProfile}
           analysisPeriod={currentData.overview?.analysis_period?.month}
+          periods={currentData.periods}
+          selectedMonth={selectedMonth}
+          onSelectMonth={changeMonth}
         />
         <main className="main-content">
           <div className="content-inner">

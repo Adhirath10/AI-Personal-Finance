@@ -54,32 +54,81 @@ def current_user_id(db: Session) -> str:
     return user_id
 
 
-def analysis_period(db: Session, user_id: str) -> dict | None:
+def analysis_period(db: Session, user_id: str, month: str | None = None) -> dict | None:
+    """Describe the month the dashboard reports on.
+
+    Without an explicit ``month`` this is the latest month with recorded
+    expenses. A newer month that only holds income (for example a salary
+    credited on the 1st) would otherwise show zero spending everywhere.
+    """
     row = db.execute(
         text(
             """
-            SELECT substr(MAX(transaction_date), 1, 7) AS month,
-                   MAX(transaction_date) AS latest_transaction_date
+            SELECT MAX(transaction_date) AS latest_transaction_date,
+                   MAX(CASE WHEN lower(transaction_type) = 'expense'
+                            THEN transaction_date END) AS latest_expense_date
             FROM transactions
             WHERE user_id = :user_id
             """
         ),
         {"user_id": user_id},
     ).mappings().one()
-    month = row["month"]
-    if not month:
+    latest_transaction_date = row["latest_transaction_date"]
+    if not latest_transaction_date:
         return None
-    year, month_number = (int(value) for value in month.split("-"))
+    latest_transaction_month = latest_transaction_date[:7]
+    latest_expense_month = (
+        row["latest_expense_date"][:7] if row["latest_expense_date"] else None
+    )
+    default_month = latest_expense_month or latest_transaction_month
+    selected = month or default_month
+    year, month_number = (int(value) for value in selected.split("-"))
     if month_number == 12:
         end = date(year + 1, 1, 1).isoformat()
     else:
         end = date(year, month_number + 1, 1).isoformat()
     return {
-        "month": month,
-        "start_date": f"{month}-01",
+        "month": selected,
+        "start_date": f"{selected}-01",
         "end_date_exclusive": end,
-        "latest_transaction_date": row["latest_transaction_date"],
-        "status": "historical" if month < date.today().strftime("%Y-%m") else "current",
+        "latest_transaction_date": latest_transaction_date,
+        "latest_transaction_month": latest_transaction_month,
+        "latest_expense_month": latest_expense_month,
+        "default_month": default_month,
+        "is_default": selected == default_month,
+        "status": "historical" if selected < date.today().strftime("%Y-%m") else "current",
+    }
+
+
+def dashboard_periods(db: Session, user_id: str) -> dict:
+    """List the months that have recorded transactions, newest first."""
+    rows = db.execute(
+        text(
+            """
+            SELECT substr(transaction_date, 1, 7) AS month,
+              SUM(CASE WHEN lower(transaction_type) = 'income' THEN amount ELSE 0 END) AS income,
+              SUM(CASE WHEN lower(transaction_type) = 'expense' THEN amount ELSE 0 END) AS expenses,
+              COUNT(*) AS transaction_count
+            FROM transactions
+            WHERE user_id = :user_id
+            GROUP BY substr(transaction_date, 1, 7)
+            ORDER BY month DESC
+            """
+        ),
+        {"user_id": user_id},
+    ).mappings().all()
+    period = analysis_period(db, user_id)
+    return {
+        "default_month": period["default_month"] if period else None,
+        "items": [
+            {
+                "month": row["month"],
+                "income": float(row["income"] or 0),
+                "expenses": float(row["expenses"] or 0),
+                "transaction_count": int(row["transaction_count"]),
+            }
+            for row in rows
+        ],
     }
 
 
@@ -106,8 +155,8 @@ def _period_totals(db: Session, user_id: str, month: str) -> dict:
     return {"income": float(row["income"]), "expenses": float(row["expenses"])}
 
 
-def dashboard_summary(db: Session, user_id: str) -> dict:
-    period = analysis_period(db, user_id)
+def dashboard_summary(db: Session, user_id: str, month: str | None = None) -> dict:
+    period = analysis_period(db, user_id, month)
     if period is None:
         return {
             "analysis_period": None,
@@ -183,8 +232,8 @@ def dashboard_monthly_trends(db: Session, user_id: str, months: int = 12) -> dic
     return {"analysis_period": period, "items": items}
 
 
-def dashboard_category_breakdown(db: Session, user_id: str) -> dict:
-    period = analysis_period(db, user_id)
+def dashboard_category_breakdown(db: Session, user_id: str, month: str | None = None) -> dict:
+    period = analysis_period(db, user_id, month)
     if period is None:
         return {"analysis_period": None, "items": []}
     rows = db.execute(

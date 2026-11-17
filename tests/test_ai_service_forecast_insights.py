@@ -225,3 +225,24 @@ def test_predict_script_forecasts_month_after_latest_record(service):
     api_forecast = service.get("/api/forecast", params={"user_id": "U1"}).json()
     assert forecast_month == "2026-01"
     assert predicted == pytest.approx(api_forecast["predicted_expense"])
+
+
+def test_selected_analysis_month_is_used_by_insights_forecast_and_explanation(service):
+    params = {"user_id": "U1", "analysis_month": "2025-11"}
+
+    insights = service.get("/api/insights", params=params).json()
+    forecast = service.get("/api/forecast", params=params).json()
+
+    assert insights["analysis_period"]["selected_month"] == "2025-11"
+    assert insights["notice"] is None
+    assert forecast["forecast_month"] == "2025-12"
+    assert forecast["history_end_month"] == "2025-11"
+    if importlib.util.find_spec("shap") is not None:
+        explanation = service.get(
+            "/api/explanations", params={**params, "model": "forecast"}
+        ).json()
+        assert explanation["forecast_month"] == "2025-12"
+        assert explanation["prediction"] == pytest.approx(forecast["predicted_expense"])
+    assert service.get(
+        "/api/insights", params={"user_id": "U1", "analysis_month": "2024-01"}
+    ).json()["status"] == "unavailable"

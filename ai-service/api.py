@@ -52,6 +52,14 @@ app = FastAPI(
 )
 
 
+MONTH_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
+AnalysisMonth = Query(
+    default=None,
+    pattern=MONTH_PATTERN,
+    description="Month to analyse (YYYY-MM); defaults to the latest month with expenses.",
+)
+
+
 class CategorizeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -83,12 +91,14 @@ def _recommendation_engine():
 def _analysis(
     user_id: str,
     *,
+    analysis_month: str | None = None,
     include_forecast: bool = True,
     include_anomalies: bool = True,
 ) -> tuple[Any, dict[str, Any]]:
     engine = _recommendation_engine()
     return engine, engine.analyze_user(
         user_id,
+        analysis_month=analysis_month,
         include_forecast=include_forecast,
         include_anomalies=include_anomalies,
     )
@@ -147,9 +157,9 @@ def _forecast_payload(analysis: dict[str, Any]) -> dict[str, Any]:
         result["history_end_month"] = history_end
         result["skip_reason"] = None
         result["notice"] = (
-            f"Recorded expenses end in {history_end}, so this is the model's "
-            f"forecast for {result.get('forecast_month')}, a month that has "
-            "already passed. Add recent transactions to forecast an upcoming month."
+            f"This forecast uses recorded expenses through {history_end}, so "
+            f"{result.get('forecast_month')} has already passed. Add recent "
+            "transactions to forecast an upcoming month."
             if is_historical
             else None
         )
@@ -252,9 +262,14 @@ def categorize(body: CategorizeBody) -> dict[str, Any]:
 
 
 @app.get("/api/forecast")
-def forecast(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
+def forecast(
+    user_id: str = Query(min_length=1, max_length=100),
+    analysis_month: str | None = AnalysisMonth,
+) -> dict[str, Any]:
     try:
-        _, analysis = _analysis(user_id, include_anomalies=False)
+        _, analysis = _analysis(
+            user_id, analysis_month=analysis_month, include_anomalies=False
+        )
         return _forecast_payload(analysis)
     except FileNotFoundError as exc:
         return _unavailable(exc)
@@ -264,9 +279,14 @@ def forecast(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, An
 
 
 @app.get("/api/anomalies")
-def anomalies(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
+def anomalies(
+    user_id: str = Query(min_length=1, max_length=100),
+    analysis_month: str | None = AnalysisMonth,
+) -> dict[str, Any]:
     try:
-        _, analysis = _analysis(user_id, include_forecast=False)
+        _, analysis = _analysis(
+            user_id, analysis_month=analysis_month, include_forecast=False
+        )
         result = analysis["potential_anomalies"]
         if result.get("status") == "unavailable":
             return {
@@ -300,9 +320,12 @@ def anomalies(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, A
 
 
 @app.get("/api/recommendations")
-def recommendations(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
+def recommendations(
+    user_id: str = Query(min_length=1, max_length=100),
+    analysis_month: str | None = AnalysisMonth,
+) -> dict[str, Any]:
     try:
-        engine, analysis = _analysis(user_id)
+        engine, analysis = _analysis(user_id, analysis_month=analysis_month)
         items = [
             _recommendation_payload(item, index)
             for index, item in enumerate(engine.generate_recommendations(analysis))
@@ -320,12 +343,16 @@ def recommendations(user_id: str = Query(min_length=1, max_length=100)) -> dict[
 
 
 @app.get("/api/insights")
-def insights(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, Any]:
+def insights(
+    user_id: str = Query(min_length=1, max_length=100),
+    analysis_month: str | None = AnalysisMonth,
+) -> dict[str, Any]:
     try:
         # Insights only compare recorded category spending, so they do not
         # depend on (or wait for) the forecasting and anomaly models.
         _, analysis = _analysis(
             user_id,
+            analysis_month=analysis_month,
             include_forecast=False,
             include_anomalies=False,
         )
@@ -371,7 +398,8 @@ def insights(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, An
                 f"Showing {period['selected_month']}, the latest month with recorded "
                 f"expenses. Transactions in {period['latest_transaction_month']} "
                 "contain no expenses yet."
-                if period["selected_month"] != period["latest_transaction_month"]
+                if analysis_month is None
+                and period["selected_month"] != period["latest_transaction_month"]
                 else None
             ),
         }
@@ -395,10 +423,13 @@ def explanations(
     transaction_id: str | None = Query(default=None, max_length=100),
     description: str | None = Query(default=None, max_length=500),
     merchant: str | None = Query(default=None, max_length=200),
+    analysis_month: str | None = AnalysisMonth,
 ) -> dict[str, Any]:
     try:
         if model == "forecast":
-            _, analysis = _analysis(user_id, include_anomalies=False)
+            _, analysis = _analysis(
+                user_id, analysis_month=analysis_month, include_anomalies=False
+            )
             forecast_result = _forecast_payload(analysis)
             if forecast_result.get("status") != "available":
                 return {
@@ -408,17 +439,21 @@ def explanations(
                 }
             module = _explainability_module("forecasting")
             output_dir = EXPLANATION_OUTPUT_DIR / "forecast"
+            # Explain the same input month the forecast used.
+            history_end = forecast_result["history_end_month"]
             global_result = module.explain_forecast_global(
                 database_path=DATABASE_PATH,
                 model_dir=MODEL_DIRS["forecasting"],
                 output_dir=output_dir,
                 user_id=user_id,
+                through_month=history_end,
             )
             individual = module.explain_forecast_for_user(
                 user_id,
                 database_path=DATABASE_PATH,
                 model_dir=MODEL_DIRS["forecasting"],
                 output_dir=output_dir,
+                through_month=history_end,
             )
             return {
                 "status": "available",

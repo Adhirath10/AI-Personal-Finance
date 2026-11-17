@@ -23,9 +23,12 @@ export const shortDate = (value) => {
       }).format(date);
 };
 
+// Formats a value already on the 0-100 scale (e.g. 6 -> "6%"). Pass fractions
+// such as 0.06 through ratioPercent instead.
 export const percent = (value) => {
   const numeric = Number(value || 0);
-  const normalized = Math.abs(numeric) <= 10 ? numeric * 100 : numeric;
-  const decimals = Number.isInteger(normalized) ? 0 : 1;
-  return `${normalized.toFixed(decimals)}%`;
+  const decimals = Number.isInteger(numeric) ? 0 : 1;
+  return `${numeric.toFixed(decimals)}%`;
 };
+
+export const ratioPercent = (ratio) => percent(Number(ratio || 0) * 100);
