@@ -227,10 +227,11 @@ def remove_transaction(
 
 @router.get("/budgets")
 def get_budgets(
+    month: str | None = Query(default=None, pattern=MONTH_PATTERN),
     db: Session = Depends(get_db),
     user_id: str = Depends(_user_id),
 ) -> dict:
-    return finance.list_budgets(db, user_id)
+    return finance.list_budgets(db, user_id, month)
 
 
 @router.post("/budgets", status_code=201)

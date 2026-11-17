@@ -102,3 +102,32 @@ export function errorMessage(error) {
   }
   return error?.message || "The request could not be completed.";
 }
+
+// Download every transaction for the configured user as a CSV file.
+export async function exportTransactionsCsv() {
+  const rows = [];
+  const limit = 200;
+  for (let offset = 0; ; offset += limit) {
+    const { data } = await api.get("/api/transactions", {
+      params: { limit, offset, sort_by: "date", sort_order: "desc" },
+    });
+    rows.push(...(data.items || []));
+    if (!data.items?.length || rows.length >= (data.total || 0)) break;
+  }
+  const columns = ["transaction_id", "date", "description", "merchant", "category", "type", "amount", "balance_after_transaction"];
+  const escape = (value) => {
+    const text = value == null ? "" : String(value);
+    return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  const csv = [columns.join(","), ...rows.map((row) => columns.map((column) => escape(row[column])).join(","))].join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = Object.assign(document.createElement("a"), {
+    href: url,
+    download: `finai-transactions-${new Date().toISOString().slice(0, 10)}.csv`,
+  });
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return rows.length;
+}

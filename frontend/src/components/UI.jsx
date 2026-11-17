@@ -7,6 +7,7 @@ import {
   Plus,
 } from "lucide-react";
 import { currency, number, percent } from "../utils/format";
+import { initialsFor } from "../utils/profile";
 
 export function PageHeading({ eyebrow, title, description, actions }) {
   return (
@@ -35,7 +36,7 @@ export function SummaryCard({ label, value, change, icon: Icon, tone, helper, pr
   })();
 
   return (
-    <article className="summary-card">
+    <article className={`summary-card tone-${tone || "blue"}`}>
       <div className="summary-top"><span>{label}</span><div className={`summary-icon ${tone}`}><Icon size={18} /></div></div>
       <div className="summary-value">{prefix}{displayValue}</div>
       <div className="summary-foot">
@@ -103,4 +104,10 @@ export function EmptyAction({ onClick, children = "Add new" }) {
 
 export function TooltipNote({ children }) {
   return <span className="tooltip-note" title={children}><CircleHelp size={14} /></span>;
+}
+
+export function Avatar({ name, photo, large = false }) {
+  const className = `profile-avatar ${large ? "large" : ""}`;
+  if (photo) return <img className={`${className} avatar-photo`} src={photo} alt={name ? `${name}'s profile photo` : "Profile photo"} />;
+  return <span className={className} aria-hidden="true">{initialsFor(name)}</span>;
 }

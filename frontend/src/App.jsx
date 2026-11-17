@@ -15,6 +15,7 @@ import {
 } from "./pages/Pages.jsx";
 import Navbar from "./components/Navbar.jsx";
 import Sidebar from "./components/Sidebar.jsx";
+import HelpGuide from "./components/HelpGuide.jsx";
 import { EmptyState, LoadingSkeleton } from "./components/UI.jsx";
 import {
   checkBackend,
@@ -25,7 +26,10 @@ import {
   runModel,
   updateResource,
 } from "./services/api.js";
-import { ArrowUpRight, Check, CircleAlert, X } from "lucide-react";
+import { Check, CircleAlert, X } from "lucide-react";
+import { buildNotifications } from "./utils/notifications";
+import { currency } from "./utils/format";
+import { readSettings, writeSettings } from "./utils/profile";
 
 const resourceNames = [
   "overview",
@@ -54,6 +58,11 @@ function overviewFields(result) {
     recentTransactions: result.transactions || [],
     activity: result.activity || null,
   };
+}
+
+// Dashboard resources that follow the month picker.
+function periodParams(name, month) {
+  return month && (name === "overview" || name === "budgets") ? { month } : {};
 }
 
 function normalizeResource(name, payload) {
@@ -93,6 +102,8 @@ export default function App() {
   const [toastKind, setToastKind] = useState("success");
   const [selectedMonth, setSelectedMonth] = useState(null);
   const selectedMonthRef = useRef(null);
+  const [settings, setSettings] = useState(readSettings);
+  const [helpOpen, setHelpOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -112,7 +123,7 @@ export default function App() {
       setMode("live");
       const results = await Promise.allSettled(resourceNames.map((name) => getResource(
         name,
-        name === "overview" && selectedMonthRef.current ? { month: selectedMonthRef.current } : {},
+        periodParams(name, selectedMonthRef.current),
       )));
       const nextData = {};
       const errors = {};
@@ -217,8 +228,8 @@ export default function App() {
     setRefreshing(true);
     try {
       const [overviewResult, budgetsResult, periodsResult] = await Promise.allSettled([
-        getResource("overview", selectedMonthRef.current ? { month: selectedMonthRef.current } : {}),
-        getResource("budgets"),
+        getResource("overview", periodParams("overview", selectedMonthRef.current)),
+        getResource("budgets", periodParams("budgets", selectedMonthRef.current)),
         getResource("periods"),
       ]);
       setResourceErrors((current) => {
@@ -278,9 +289,16 @@ export default function App() {
     setSelectedMonth(next);
     setData((current) => ({ ...current, ...monthScopedResults }));
     try {
-      const result = await getResource("overview", next ? { month: next } : {});
+      const [result, budgets] = await Promise.all([
+        getResource("overview", periodParams("overview", next)),
+        getResource("budgets", periodParams("budgets", next)),
+      ]);
       if (selectedMonthRef.current !== next) return;
-      setData((current) => ({ ...current, ...overviewFields(result) }));
+      setData((current) => ({
+        ...current,
+        ...overviewFields(result),
+        budgets: normalizeResource("budgets", budgets),
+      }));
       setResourceErrors((current) => {
         const { overviewError, ...rest } = current;
         return rest;
@@ -297,8 +315,8 @@ export default function App() {
   const saveResource = useCallback(async (resource, payload, id) => {
     if (resource === "settings") {
       try {
-        localStorage.setItem("finai-settings", JSON.stringify(payload));
-        setData((current) => ({ ...current, settings: payload }));
+        writeSettings(payload);
+        setSettings(payload);
         return true;
       } catch (error) {
         notify(`Preferences could not be saved in this browser: ${errorMessage(error)}`, "error");
@@ -312,7 +330,7 @@ export default function App() {
         : await createResource(resource, payload);
       if (resource === "budgets" || resource === "goals") {
         try {
-          const refreshed = await getResource(resource);
+          const refreshed = await getResource(resource, periodParams(resource, selectedMonthRef.current));
           setData((current) => ({
             ...current,
             [resource]: normalizeResource(resource, refreshed),
@@ -374,7 +392,7 @@ export default function App() {
     }
   }, [mode, notify]);
 
-  const executeModel = useCallback(async (modelName, payload = {}, label = "AI model") => {
+  const executeModel = useCallback(async (modelName, payload = {}, label = "AI model", { quiet = false } = {}) => {
     if (mode !== "live") {
       notify(`${label} did not run: connect a live backend first.`, "error");
       return null;
@@ -420,7 +438,9 @@ export default function App() {
         return current;
       });
       const reason = result.reason || result.skip_reason;
-      if (result.status === "unavailable") {
+      if (quiet) {
+        // The caller reports a combined summary.
+      } else if (result.status === "unavailable") {
         notify(`${label} unavailable: ${reason || "The model did not return results."}`, "error");
       } else if (result.status === "insufficient_history") {
         notify(`${label} needs more history: ${reason || "Not enough recorded months."}`, "error");
@@ -437,12 +457,43 @@ export default function App() {
       }
       return result;
     } catch (error) {
-      notify(`${label} failed: ${errorMessage(error)}`, "error");
+      if (!quiet) notify(`${label} failed: ${errorMessage(error)}`, "error");
       return null;
     } finally {
       setResourceLoading((current) => ({ ...current, [modelName]: false }));
     }
   }, [mode, notify]);
+
+  const [runningAll, setRunningAll] = useState(false);
+  const runAllModels = useCallback(async () => {
+    if (mode !== "live") {
+      notify("AI analysis did not run: connect a live backend first.", "error");
+      return;
+    }
+    setRunningAll(true);
+    try {
+      const [forecast, insights, anomalies, recommendations] = await Promise.all([
+        executeModel("forecast", {}, "Expense forecast", { quiet: true }),
+        executeModel("insights", {}, "AI insights", { quiet: true }),
+        executeModel("anomalies", {}, "Anomaly detection", { quiet: true }),
+        executeModel("recommendations", {}, "Recommendations", { quiet: true }),
+      ]);
+      const parts = [];
+      if (forecast?.status === "available") parts.push(`forecast ${currency(forecast.predicted_expense)} for ${forecast.forecast_month}`);
+      if (insights?.items?.length) parts.push(`${insights.items.length} insights`);
+      if (anomalies?.status === "available") parts.push(`${anomalies.anomaly_count} transactions to review`);
+      if (recommendations?.items?.length) parts.push(`${recommendations.items.length} recommendations`);
+      const failed = [forecast, insights, anomalies, recommendations].filter((result) => !result || result.status === "unavailable").length;
+      notify(
+        parts.length
+          ? `AI analysis complete: ${parts.join(" · ")}.${failed ? ` ${failed} model(s) were unavailable.` : ""}`
+          : "AI analysis finished, but no model returned results. Check that the AI service is running.",
+        parts.length ? "success" : "error",
+      );
+    } finally {
+      setRunningAll(false);
+    }
+  }, [executeModel, mode, notify]);
 
   const handleDelete = async (resource, id) => {
     if (window.confirm("Delete this item? This action cannot be undone.")) {
@@ -453,8 +504,20 @@ export default function App() {
     }
   };
 
-  const handleNotifications = () => notify("Notifications are not available because no backend notifications API is configured.", "error");
   const handleProfile = () => navigate("/settings");
+  const handleSearchSubmit = (value) => navigate("/transactions", { state: { search: value.trim() } });
+  const notifications = useMemo(() => buildNotifications(data), [data]);
+
+  // Close open "…" row menus after choosing an action or clicking elsewhere.
+  useEffect(() => {
+    const closeMenus = (event) => {
+      document.querySelectorAll("details.row-menu[open]").forEach((menu) => {
+        if (!menu.contains(event.target) || event.target.closest(".row-menu-pop button")) menu.open = false;
+      });
+    };
+    document.addEventListener("click", closeMenus);
+    return () => document.removeEventListener("click", closeMenus);
+  }, []);
   const themeToggle = () => setTheme((value) => value === "light" ? "dark" : "light");
   const recommendationCount = Array.isArray(currentData.recommendations) ? currentData.recommendations.length : 0;
 
@@ -466,16 +529,23 @@ export default function App() {
         collapsed={sidebarCollapsed}
         onCollapse={() => setSidebarCollapsed((value) => !value)}
         recommendationCount={recommendationCount}
+        profile={settings}
+        onWorkspace={handleProfile}
+        onHelp={() => setHelpOpen(true)}
       />
       <div className={`app-main ${sidebarCollapsed ? "main-expanded" : ""}`}>
         <Navbar
           onMenu={() => setSidebarOpen(true)}
           onSearch={setSearch}
+          onSearchSubmit={handleSearchSubmit}
           onTheme={themeToggle}
           theme={theme}
           mode={mode}
-          onNotifications={handleNotifications}
+          notifications={notifications}
+          notificationsEnabled={settings.notifications ?? true}
+          onNavigate={navigate}
           onProfile={handleProfile}
+          profile={settings}
           analysisPeriod={currentData.overview?.analysis_period?.month}
           periods={currentData.periods}
           selectedMonth={selectedMonth}
@@ -487,23 +557,24 @@ export default function App() {
             {mode === "live" && Object.keys(resourceErrors).length > 0 && <div className="inline-warning" role="status"><CircleAlert size={16} />Some backend data is unavailable: {Object.values(resourceErrors).join(" · ")}</div>}
             {loading ? <LoadingSkeleton rows={5} /> : (
               <Routes>
-                <Route path="/" element={<OverviewPage data={overviewData} mode={mode} refreshing={refreshing} onRefresh={refreshLiveData} onNavigate={navigate} />} />
+                <Route path="/" element={<OverviewPage data={overviewData} mode={mode} refreshing={refreshing} onRefresh={refreshLiveData} onNavigate={navigate} profile={settings} onRunAll={runAllModels} runningAll={runningAll} />} />
                 <Route path="/transactions" element={<TransactionsPage data={currentData} mode={mode} transactionMeta={transactionMeta} transactionLoading={transactionLoading} onFetchTransactions={fetchTransactions} onSave={saveResource} onDelete={handleDelete} onRunModel={executeModel} toast={notify} />} />
                 <Route path="/insights" element={<InsightsPage data={currentData} mode={mode} onRunModel={executeModel} />} />
                 <Route path="/forecasting" element={<ForecastPage data={currentData} mode={mode} onRunModel={executeModel} navigate={navigate} />} />
-                <Route path="/anomalies" element={<AnomaliesPage data={currentData} mode={mode} onRunModel={executeModel} />} />
-                <Route path="/recommendations" element={<RecommendationsPage data={currentData} mode={mode} onRunModel={executeModel} />} />
+                <Route path="/anomalies" element={<AnomaliesPage data={currentData} mode={mode} onRunModel={executeModel} navigate={navigate} />} />
+                <Route path="/recommendations" element={<RecommendationsPage data={currentData} mode={mode} onRunModel={executeModel} navigate={navigate} />} />
                 <Route path="/budgets" element={<BudgetsPage data={currentData} mode={mode} onSave={saveResource} onDelete={handleDelete} />} />
                 <Route path="/goals" element={<GoalsPage data={currentData} mode={mode} onSave={saveResource} onDelete={handleDelete} />} />
                 <Route path="/simulator" element={<SimulatorPage data={currentData} mode={mode} />} />
                 <Route path="/explainability" element={<ExplainabilityPage data={currentData} mode={mode} onRunModel={executeModel} />} />
-                <Route path="/settings" element={<SettingsPage data={currentData} mode={mode} theme={theme} onTheme={themeToggle} onSave={saveResource} toast={notify} />} />
+                <Route path="/settings" element={<SettingsPage data={currentData} settings={settings} mode={mode} theme={theme} onTheme={themeToggle} onSave={saveResource} toast={notify} onReset={() => { setSettings({}); setTheme("light"); }} />} />
                 <Route path="*" element={<EmptyState title="Page not found" description="This FinAI page doesn’t exist." action={<button className="button button-primary" onClick={() => navigate("/")}>Go to overview</button>} />} />
               </Routes>
             )}
           </div>
         </main>
       </div>
+      {helpOpen && <HelpGuide onClose={() => setHelpOpen(false)} onNavigate={navigate} />}
       {toast && <div className={`toast ${toastKind}`} role="status">{toastKind === "error" ? <CircleAlert size={17} /> : <Check size={17} />}{toast}<button onClick={() => setToast(null)} aria-label="Dismiss notification"><X size={15} /></button></div>}
       <div className="sr-only" aria-live="polite">{titleFor(location.pathname)}</div>
     </div>

@@ -122,6 +122,28 @@ Copy-Item frontend\.env.example frontend\.env
 npm --prefix frontend run dev
 ```
 
+### Recent data for a demo
+
+The dataset ends in 2025, so forecasts would be for months that have already
+passed. To show current data for one user, generate recent months from that
+user's own history (run from the project root):
+
+```bash
+python scripts/add_recent_data.py --user-id U001
+```
+
+This adds complete months up to the end of last month, so the forecast is for the
+current month. The script backs up the database to `data/database/backups/`
+first. Generated rows have IDs starting with `DEMO-`. Re-running it replaces
+them, and `--remove` deletes them:
+
+```bash
+python scripts/add_recent_data.py --user-id U001 --remove
+```
+
+Restart the backend and AI service afterwards, then use **Run AI analysis** on
+the overview to fill in every AI panel at once.
+
 Set `FINANCE_USER_ID` in the root `.env` to an existing `users.user_id` in the
 database, and keep both Python services bound to loopback. The frontend does
 not use demo fallbacks; failed requests are shown as errors. The service

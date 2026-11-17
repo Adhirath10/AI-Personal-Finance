@@ -246,3 +246,13 @@ def test_selected_analysis_month_is_used_by_insights_forecast_and_explanation(se
     assert service.get(
         "/api/insights", params={"user_id": "U1", "analysis_month": "2024-01"}
     ).json()["status"] == "unavailable"
+
+
+def test_forecast_for_the_current_month_is_not_historical(service):
+    service.use_today(date(2026, 1, 15))
+
+    body = service.get("/api/forecast", params={"user_id": "U1"}).json()
+
+    assert body["status"] == "available"
+    assert body["forecast_month"] == "2026-01"
+    assert body["is_historical"] is False

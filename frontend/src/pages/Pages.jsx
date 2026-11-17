@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { errorMessage, exportTransactionsCsv } from "../services/api";
+import { clearSettings, resizeImage } from "../utils/profile";
 import {
   Activity,
   ArrowDownRight,
@@ -40,6 +43,7 @@ import {
   YAxis,
 } from "recharts";
 import {
+  Avatar,
   BudgetProgress,
   Button,
   ChartCard,
@@ -62,7 +66,7 @@ function MiniMetric({ icon: Icon, label, value, tone = "blue" }) {
   return <div className="mini-metric"><span className={`mini-metric-icon ${tone}`}><Icon size={16} /></span><span>{label}</span><strong>{value}</strong></div>;
 }
 
-export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate }) {
+export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate, profile = {}, onRunAll, runningAll = false }) {
   const [trendMonths, setTrendMonths] = useState(6);
   const overview = data.overview || {};
   const monthlyData = (data.monthly || []).slice(-trendMonths);
@@ -72,7 +76,7 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate }) 
   const period = overview.analysis_period?.month;
   return (
     <div className="page-stack">
-      <PageHeading eyebrow={period ? `Recorded period · ${period}` : "Recorded financial data"} title="Financial overview" description="A database-derived view of your recorded income, expenses and plans." actions={<><button className="button button-outline" onClick={() => window.print()}><Download size={15} />Export report</button><button className="button button-primary" onClick={() => onNavigate("/transactions")}><Plus size={16} />Add transaction</button></>} />
+      <WelcomeHero overview={overview} profile={profile} mode={mode} runningAll={runningAll} onRunAll={onRunAll} onAdd={() => onNavigate("/transactions", { state: { addTransaction: true } })} />
       {period && <PeriodNote period={overview.analysis_period} />}
       {mode === "live" && data.overviewError && <div className="inline-warning"><CircleAlert size={16} />{data.overviewError}</div>}
       <div className="summary-grid">
@@ -99,11 +103,12 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate }) 
           {recent.length ? <TransactionTable rows={recent} compact /> : <EmptyState title="No transactions yet" description="Transactions from your connected backend appear here." />}
         </ChartCard>
         <section className="ai-spotlight span-12">
-          <div className="ai-spotlight-head"><div className="ai-spark"><Sparkles size={18} /></div><div><h2>Your AI financial pulse</h2><p>AI results appear only after a connected model endpoint returns them.</p></div><StatusBadge tone="neutral">{modeIsLive ? "Run on request" : "Unavailable"}</StatusBadge></div>
+          <div className="ai-spotlight-head"><div className="ai-spark"><Sparkles size={18} /></div><div><h2>Your AI financial pulse</h2><p>Press “Run AI analysis” above to fill these in with the saved models.</p></div><StatusBadge tone={modeIsLive ? "success" : "neutral"}>{modeIsLive ? "Models ready" : "Unavailable"}</StatusBadge></div>
           <div className="pulse-grid">
             <div className="pulse-item"><span className="pulse-kicker"><TrendingDown size={14} />Expense forecast</span><strong>{data.forecast?.status === "available" ? currency(data.forecast.predicted_expense) : data.forecast?.status ? "Unavailable" : "Not run"}</strong><p>{data.forecast?.status === "available" ? `For ${data.forecast.forecast_month}${data.forecast.is_historical ? ` · from records through ${data.forecast.history_end_month}` : ""}` : data.forecast?.reason || data.forecast?.skip_reason || "Run forecasting to check model availability."}</p><button className="text-button" onClick={() => onNavigate("/forecasting")}>Explore forecast <ArrowRight size={13} /></button></div>
             <div className="pulse-item"><span className="pulse-kicker"><ShieldAlert size={14} />Unusual activity</span><strong>{data.anomalies?.status === "available" ? (data.anomalies.anomaly_count ?? "—") : "Not run"}</strong><p>{data.anomalies?.analysis_period?.selected_month ? `Recorded period ${data.anomalies.analysis_period.selected_month}` : "Run the saved model to review potential outliers."}</p><button className="text-button" onClick={() => onNavigate("/anomalies")}>Review activity <ArrowRight size={13} /></button></div>
-            <div className="pulse-item"><span className="pulse-kicker"><Lightbulb size={14} />Smart suggestions</span><strong>{Array.isArray(data.recommendations) ? data.recommendations.length : "Not run"}</strong><p>{data.recommendations?.analysis_period?.selected_month ? `Analysis period ${data.recommendations.analysis_period.selected_month}` : "Request data-backed recommendations."}</p><button className="text-button" onClick={() => onNavigate("/recommendations")}>See suggestions <ArrowRight size={13} /></button></div>
+            <div className="pulse-item"><span className="pulse-kicker"><Lightbulb size={14} />Smart suggestions</span><strong>{Array.isArray(data.recommendations) ? data.recommendations.length : "Not run"}</strong><p>{data.recommendationsPeriod?.selected_month ? `Analysis period ${data.recommendationsPeriod.selected_month}` : "Request data-backed recommendations."}</p><button className="text-button" onClick={() => onNavigate("/recommendations")}>See suggestions <ArrowRight size={13} /></button></div>
+            <div className="pulse-item"><span className="pulse-kicker"><Sparkles size={14} />Spending insights</span><strong>{data.insights?.items ? data.insights.items.length : "Not run"}</strong><p>{data.insights?.items?.[0] ? `${data.insights.items[0].title} (${insightChangeLabel(data.insights.items[0])})` : "Compare each category with earlier months."}</p><button className="text-button" onClick={() => onNavigate("/insights")}>View insights <ArrowRight size={13} /></button></div>
           </div>
         </section>
       </div>
@@ -111,9 +116,49 @@ export function OverviewPage({ data, mode, refreshing, onRefresh, onNavigate }) 
   );
 }
 
+function greeting() {
+  const hour = new Date().getHours();
+  return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+}
+
+function monthTitle(month) {
+  return month ? new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric" }).format(new Date(`${month}-01T00:00:00`)) : "";
+}
+
+function WelcomeHero({ overview, profile, mode, runningAll, onRunAll, onAdd }) {
+  const month = overview.analysis_period?.month;
+  const income = Number(overview.income || 0);
+  const expenses = Number(overview.expenses || 0);
+  const savingsRate = income > 0 ? Math.max(income - expenses, 0) / income : null;
+  const firstName = String(profile.name || "").trim().split(/\s+/)[0];
+  return (
+    <section className="welcome-hero">
+      <div className="welcome-copy">
+        <span className="welcome-kicker"><Sparkles size={14} />{greeting()}{firstName ? `, ${firstName}` : ""}</span>
+        <h1>{month ? `Your ${monthTitle(month)} snapshot` : "Your financial overview"}</h1>
+        <p>{month
+          ? <>You earned <strong>{currency(income)}</strong> and spent <strong>{currency(expenses)}</strong>{savingsRate != null ? <> — a savings rate of <strong>{ratioPercent(savingsRate)}</strong>.</> : "."}</>
+          : "Add transactions to see your monthly snapshot."}</p>
+        <div className="welcome-chips">
+          {overview.budget_utilization != null && <span><PieChart size={13} />Budget used {percent(overview.budget_utilization)}</span>}
+          {overview.expenseChange != null && <span>{overview.expenseChange > 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}Spending {overview.expenseChange > 0 ? "up" : "down"} {percent(Math.abs(overview.expenseChange))} vs last month</span>}
+        </div>
+      </div>
+      <div className="welcome-actions">
+        <button className="button welcome-primary" disabled={mode !== "live" || runningAll} onClick={onRunAll}><BrainCircuit size={16} />{runningAll ? "Analysing..." : "Run AI analysis"}</button>
+        <button className="button welcome-secondary" onClick={onAdd}><Plus size={16} />Add transaction</button>
+        <button className="button welcome-secondary" onClick={() => window.print()}><Download size={15} />Export report</button>
+      </div>
+    </section>
+  );
+}
+
 function PeriodNote({ period }) {
   const newerIncomeOnly = period.is_default && period.latest_transaction_month && period.latest_transaction_month !== period.month;
-  if (!newerIncomeOnly && period.status !== "historical") return null;
+  const now = new Date();
+  const [year, monthNumber] = String(period.month).split("-").map(Number);
+  const monthsAgo = (now.getFullYear() - year) * 12 + (now.getMonth() + 1 - monthNumber);
+  if (!newerIncomeOnly && monthsAgo < 2) return null;
   return <div className="info-strip"><CircleAlert size={16} /><span>{newerIncomeOnly
     ? `Showing ${period.month}, the latest month with recorded expenses. Transactions in ${period.latest_transaction_month} contain no expenses yet. Use the month picker at the top to switch periods.`
     : `Showing recorded data for ${period.month}. This is not current live financial activity.`}</span></div>;
@@ -187,15 +232,29 @@ export function TransactionsPage({
   onDelete,
   onRunModel,
 }) {
-  const [query, setQuery] = useState("");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState(() => location.state?.search || "");
   const [type, setType] = useState("All types");
   const [category, setCategory] = useState("All categories");
   const [sort, setSort] = useState("date-new");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [page, setPage] = useState(1);
-  const [editing, setEditing] = useState(null);
+  const [editing, setEditing] = useState(() => (location.state?.addTransaction ? {} : null));
   const pageSize = 7;
+  // Apply a search or "add" request sent from another page, then clear it so a
+  // browser refresh does not repeat it.
+  useEffect(() => {
+    if (!location.state) return;
+    if (location.state.search !== undefined) {
+      setQuery(location.state.search);
+      setPage(1);
+    }
+    if (location.state.addTransaction) setEditing({});
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate]);
+  const latestBalance = Number((data.recentTransactions || [])[0]?.balance_after_transaction);
   const rows = data.transactions || [];
   const total = transactionMeta?.total || 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -222,7 +281,13 @@ export function TransactionsPage({
   const submit = async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const payload = { description: form.get("description"), merchant: form.get("merchant"), date: form.get("date"), category: form.get("category"), amount: Number(form.get("amount")), balance_after_transaction: Number(form.get("balance_after_transaction")), type: form.get("type") };
+    const amount = Number(form.get("amount"));
+    const enteredBalance = String(form.get("balance_after_transaction") || "").trim();
+    // Left blank: continue from the latest recorded balance.
+    const balance = enteredBalance !== ""
+      ? Number(enteredBalance)
+      : (Number.isFinite(latestBalance) ? latestBalance : 0) + (form.get("type") === "Income" ? amount : -amount);
+    const payload = { description: form.get("description"), merchant: form.get("merchant"), date: form.get("date"), category: form.get("category"), amount, balance_after_transaction: Math.round(balance * 100) / 100, type: form.get("type") };
     const result = await onSave("transactions", payload, editing?.id);
     if (result) {
       setEditing(null);
@@ -256,7 +321,7 @@ export function TransactionsPage({
         {transactionLoading ? <div className="empty-table">Loading transactions…</div> : rows.length ? <TransactionTable rows={rows} onEdit={setEditing} onDelete={onDelete ? (row) => onDelete("transactions", row.id) : undefined} /> : <EmptyState title="No matching transactions" description={data.transactionsError || "Try adjusting your search or filters."} />}
         <div className="table-footer"><span>Showing {total ? (page - 1) * pageSize + 1 : 0}–{Math.min((page - 1) * pageSize + rows.length, total)} of {total} transactions</span><div className="pagination"><button disabled={page <= 1 || transactionLoading} onClick={() => setPage((current) => current - 1)}>Previous</button><span>{page} / {totalPages}</span><button disabled={page >= totalPages || transactionLoading} onClick={() => setPage((current) => current + 1)}>Next</button></div></div>
       </section>
-      {editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={submit}><header><div><h2>{editing.id ? "Edit transaction" : "Add transaction"}</h2><p>Keep your financial activity up to date.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Description<input name="description" required defaultValue={editing.description || ""} /></label><label>Merchant<input name="merchant" required defaultValue={editing.merchant || ""} /></label><label>Amount (₹)<input name="amount" type="number" min="0.01" step="0.01" required defaultValue={editing.amount || ""} /></label><label>Balance after transaction (₹)<input name="balance_after_transaction" type="number" step="0.01" required defaultValue={editing.balance_after_transaction ?? ""} /></label><label>Date<input name="date" type="date" required defaultValue={editing.date || new Date().toISOString().slice(0, 10)} /></label><label>Category<select name="category" defaultValue={editing.category || categories[0] || "Other"}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label>Type<select name="type" defaultValue={editing.type || "Expense"}><option>Expense</option><option>Income</option></select></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">{editing.id ? "Save changes" : "Add transaction"}</Button></footer></form></div>}
+      {editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={submit}><header><div><h2>{editing.id ? "Edit transaction" : "Add transaction"}</h2><p>Keep your financial activity up to date.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Description<input name="description" required defaultValue={editing.description || ""} /></label><label>Merchant<input name="merchant" required defaultValue={editing.merchant || ""} /></label><label>Amount (₹)<input name="amount" type="number" min="0.01" step="0.01" required defaultValue={editing.amount || ""} /></label><label>Balance after transaction (₹)<input name="balance_after_transaction" type="number" step="0.01" placeholder={Number.isFinite(latestBalance) ? `Auto from latest balance ${currency(latestBalance)}` : "Optional"} defaultValue={editing.balance_after_transaction ?? ""} /></label><label>Date<input name="date" type="date" required defaultValue={editing.date || new Date().toISOString().slice(0, 10)} /></label><label>Category<select name="category" defaultValue={editing.category || categories[0] || "Other"}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label>Type<select name="type" defaultValue={editing.type || "Expense"}><option>Expense</option><option>Income</option></select></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">{editing.id ? "Save changes" : "Add transaction"}</Button></footer></form></div>}
     </div>
   );
 }
@@ -266,8 +331,24 @@ export function InsightsPage({ data, mode, onRunModel }) {
   return <div className="page-stack"><PageHeading eyebrow={insights?.analysis_period?.selected_month ? `Recorded period · ${insights.analysis_period.selected_month}` : "Patterns & opportunities"} title="AI insights" description="Patterns derived from this user’s stored transaction history." actions={<Button variant="outline" icon={RefreshCw} disabled={mode !== "live" || data.modelLoading?.insights} onClick={() => onRunModel("insights", {}, "AI insights")}>{data.modelLoading?.insights ? "Analyzing..." : "Refresh insights"}</Button>} />{insights?.notice && <div className="info-strip" role="status"><CircleAlert size={16} /><span>{insights.notice}</span></div>}{insights?.items?.length ? <div className="insight-grid">{insights.items.map((item, index) => <InsightCard key={item.id || index} item={item} />)}</div> : <EmptyState title={insights?.status === "unavailable" ? "Insights unavailable" : "No AI insights available"} description={insights?.reason || data.insightsError || "Request analysis to check for transaction patterns. No insights are fabricated when the service is unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.insights} onClick={() => onRunModel("insights", {}, "AI insights")}>Request insights</Button>} />}<div className="info-strip"><BrainCircuit size={17} /><span>Insights are based on recorded transactions. Their analysis period may be historical.</span></div></div>;
 }
 
+function insightChange(item) {
+  const values = item.supporting_values || {};
+  const latest = Number(values.latest_month_spending);
+  const average = Number(values.historical_monthly_average);
+  return Number.isFinite(latest) && Number.isFinite(average) && average ? (latest - average) / Math.abs(average) : null;
+}
+
+function insightChangeLabel(item) {
+  const change = insightChange(item);
+  if (change == null) return "";
+  if (Math.abs(change) < 0.005) return "No change";
+  return `${change >= 0 ? "+" : "−"}${ratioPercent(Math.abs(change))}`;
+}
+
 function InsightCard({ item }) {
-  return <article className="panel insight-card"><div className="insight-symbol"><Sparkles size={18} /></div><StatusBadge tone={item.priority === "High" ? "danger" : "success"}>{item.priority || "Insight"}</StatusBadge><h3>{item.title}</h3><p>{item.description}</p>{item.supporting_values && <div className="support-values">{Object.entries(item.supporting_values).map(([name, value]) => <span key={name}>{name.replaceAll("_", " ")} <strong>{formatInsightValue(name, value)}</strong></span>)}</div>}</article>;
+  const change = insightChange(item);
+  const direction = change == null || Math.abs(change) < 0.005 ? "flat" : change > 0 ? "up" : "down";
+  return <article className={`panel insight-card insight-${direction}`}><div className="insight-card-top"><div className="insight-symbol"><Sparkles size={18} /></div>{change != null && <span className={`insight-change ${direction}`}>{direction === "up" ? <TrendingUp size={15} /> : direction === "down" ? <TrendingDown size={15} /> : null}{insightChangeLabel(item)}</span>}</div><StatusBadge tone={item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success"}>{item.priority || "Insight"}</StatusBadge><h3>{item.title}</h3><p>{item.description}</p>{item.supporting_values && <div className="support-values">{Object.entries(item.supporting_values).map(([name, value]) => <span key={name}>{name.replaceAll("_", " ")} <strong>{formatInsightValue(name, value)}</strong></span>)}</div>}</article>;
 }
 
 function formatInsightValue(name, value) {
@@ -282,13 +363,13 @@ export function ForecastPage({ data, mode, onRunModel, navigate }) {
   return <div className="page-stack"><PageHeading eyebrow="Predictive finance" title="Expense forecasting" description="Run the saved Random Forest model against available recorded history." actions={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Running forecast..." : "Run forecast"}</Button>} />{usable ? <>{forecast.is_historical ? <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{forecast.notice || `Recorded history ends in ${forecast.history_end_month}, so the forecast month ${forecast.forecast_month} has already passed.`}</span></div> : <div className="info-strip"><CircleAlert size={16} /><span>Forecast for the month after your latest recorded expenses ({forecast.history_end_month || forecast.analysis_period?.selected_month}).</span></div>}<div className="forecast-hero"><div className="forecast-main"><div className="forecast-kicker"><Sparkles size={15} />FORECAST <TooltipNote>Model output from the connected forecasting API.</TooltipNote></div><strong>{currency(forecast.predicted_expense)}</strong><span>Predicted expenses for {forecast.forecast_month}</span>{forecast.is_historical ? <StatusBadge tone="warning">Based on historical records</StatusBadge> : <StatusBadge tone="success">Model response received</StatusBadge>}</div><div className="forecast-metrics"><MiniMetric icon={Activity} label="MAE" value={forecast.mae == null ? "—" : currency(forecast.mae)} /><MiniMetric icon={Activity} label="RMSE" value={forecast.rmse == null ? "—" : currency(forecast.rmse)} /><MiniMetric icon={Activity} label="MAPE" value={forecast.mape == null ? "—" : `${Number(forecast.mape).toFixed(1)}%`} /></div></div><ChartCard title="Historical spending" subtitle="Recorded monthly expenses"><div className="chart-area chart-area-tall"><SpendingLineChart data={data.monthly || []} /></div></ChartCard>{explanation?.feature_importance?.length ? <ChartCard title="What drives this forecast?" subtitle="Global mean absolute SHAP contribution"><FeatureImportanceChart data={explanation.feature_importance} /></ChartCard> : <EmptyState title={explanation?.status && explanation.status !== "available" ? "SHAP explanation unavailable" : "Explain this forecast"} description={explanation?.reason || "See which recent spending features pushed this prediction up or down."} action={<div className="heading-actions"><Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={() => onRunModel("explainability", { model: "forecast" }, "Forecast explanation")}>{data.modelLoading?.explainability ? "Explaining..." : "Explain this forecast"}</Button><Button variant="outline" onClick={() => navigate("/explainability")}>Open Explainable AI</Button></div>} />}{explanation?.feature_contributions?.length > 0 && <FeatureTable rows={explanation.feature_contributions} title="This prediction explained" />}</> : <EmptyState title={forecast?.status === "insufficient_history" ? "Not enough history to forecast" : forecast?.status === "unavailable" ? "Forecast unavailable" : "Forecasting has not run"} description={forecast?.reason || forecast?.skip_reason || data.forecastError || "Run the saved forecasting model on your recorded monthly expenses."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Checking..." : "Check forecast status"}</Button>} />}</div>;
 }
 
-export function AnomaliesPage({ data, mode, onRunModel }) {
+export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
   const result = data.anomalies;
   const items = result?.items || result?.transactions || [];
-  return <div className="page-stack"><PageHeading eyebrow={result?.analysis_period?.selected_month ? `Recorded period · ${result.analysis_period.selected_month}` : "Transaction safety"} title="Anomaly detection" description="Review out-of-pattern transactions from the saved Isolation Forest model." actions={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={() => onRunModel("anomalies", {}, "Anomaly detection")}>{data.modelLoading?.anomalies ? "Analyzing..." : "Analyze transactions"}</Button>} /><div className="info-strip info-warning"><ShieldAlert size={17} /><span>An unusual transaction is a statistical outlier requiring review, not confirmed fraud. Results are limited to data after the model’s training cutoff.</span></div>{result?.status === "available" ? <><div className="summary-grid"><SummaryCard label="Transactions analyzed" value={result.total_analyzed ?? "—"} format="number" icon={Activity} tone="blue" /><SummaryCard label="Normal transactions" value={result.normal_count ?? "—"} format="number" icon={BadgeCheck} tone="mint" /><SummaryCard label="Potential anomalies" value={result.anomaly_count ?? items.length} format="number" icon={ShieldAlert} tone="rose" /><SummaryCard label="Alert rate" value={result.alert_rate == null ? "—" : result.alert_rate * 100} format="percent" icon={CircleAlert} tone="amber" /></div><section className="panel"><div className="panel-heading"><div><h2>Transactions to review</h2><p>Scored after {result.training_end || "the model training cutoff"}</p></div></div>{items.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Transaction</th><th>Date</th><th>Category</th><th>Anomaly score</th><th>Review status</th></tr></thead><tbody>{items.map((item) => <tr key={item.transaction_id || item.id}><td><div className="transaction-cell"><span className="merchant-logo">{(item.merchant || "TX").slice(0, 2).toUpperCase()}</span><span><strong>{item.merchant || item.description || "Transaction"}</strong><small>{item.transaction_id || item.id}</small></span></div></td><td>{shortDate(item.transaction_date || item.date)}</td><td>{item.category}</td><td><strong>{Number(item.anomaly_score).toFixed(4)}</strong></td><td><StatusBadge tone="warning">{item.review_status || "Needs review"}</StatusBadge></td></tr>)}</tbody></table></div> : <EmptyState title="No potential anomalies returned" description="The model did not flag any of the eligible, out-of-sample expense transactions." />}</section></> : <EmptyState title={result?.status === "no_out_of_sample_rows" ? "No eligible out-of-sample transactions" : "Anomaly analysis unavailable"} description={result?.reason || data.anomaliesError || `Model status: ${result?.status || "not run"}. Run the saved model to inspect eligible expenses.`} action={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={() => onRunModel("anomalies", {}, "Anomaly detection")}>{data.modelLoading?.anomalies ? "Analyzing..." : "Check model status"}</Button>} />}</div>;
+  return <div className="page-stack"><PageHeading eyebrow={result?.analysis_period?.selected_month ? `Recorded period · ${result.analysis_period.selected_month}` : "Transaction safety"} title="Anomaly detection" description="Review out-of-pattern transactions from the saved Isolation Forest model." actions={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={() => onRunModel("anomalies", {}, "Anomaly detection")}>{data.modelLoading?.anomalies ? "Analyzing..." : "Analyze transactions"}</Button>} /><div className="info-strip info-warning"><ShieldAlert size={17} /><span>An unusual transaction is a statistical outlier requiring review, not confirmed fraud. Results are limited to data after the model’s training cutoff.</span></div>{result?.status === "available" ? <><div className="summary-grid"><SummaryCard label="Transactions analyzed" value={result.total_analyzed ?? "—"} format="number" icon={Activity} tone="blue" /><SummaryCard label="Normal transactions" value={result.normal_count ?? "—"} format="number" icon={BadgeCheck} tone="mint" /><SummaryCard label="Potential anomalies" value={result.anomaly_count ?? items.length} format="number" icon={ShieldAlert} tone="rose" /><SummaryCard label="Alert rate" value={result.alert_rate == null ? "—" : result.alert_rate * 100} format="percent" icon={CircleAlert} tone="amber" /></div><section className="panel"><div className="panel-heading"><div><h2>Transactions to review</h2><p>Scored after {result.training_end || "the model training cutoff"}</p></div></div>{items.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Transaction</th><th>Date</th><th>Category</th><th>Anomaly score</th><th>Review status</th><th aria-label="Actions" /></tr></thead><tbody>{items.map((item) => <tr key={item.transaction_id || item.id}><td><div className="transaction-cell"><span className="merchant-logo">{(item.merchant || "TX").slice(0, 2).toUpperCase()}</span><span><strong>{item.merchant || item.description || "Transaction"}</strong><small>{item.transaction_id || item.id}</small></span></div></td><td>{shortDate(item.transaction_date || item.date)}</td><td>{item.category}</td><td><strong>{Number(item.anomaly_score).toFixed(4)}</strong></td><td><StatusBadge tone="warning">{item.review_status || "Needs review"}</StatusBadge></td><td className="align-right"><button className="text-button" disabled={mode !== "live"} onClick={() => { navigate("/explainability", { state: { model: "anomaly" } }); onRunModel("explainability", { model: "anomaly", transaction_id: item.transaction_id || item.id }, "Anomaly explanation"); }}>Explain <ArrowRight size={13} /></button></td></tr>)}</tbody></table></div> : <EmptyState title="No potential anomalies returned" description="The model did not flag any of the eligible, out-of-sample expense transactions." />}</section></> : <EmptyState title={result?.status === "no_out_of_sample_rows" ? "No eligible out-of-sample transactions" : "Anomaly analysis unavailable"} description={result?.reason || data.anomaliesError || `Model status: ${result?.status || "not run"}. Run the saved model to inspect eligible expenses.`} action={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={() => onRunModel("anomalies", {}, "Anomaly detection")}>{data.modelLoading?.anomalies ? "Analyzing..." : "Check model status"}</Button>} />}</div>;
 }
 
-export function RecommendationsPage({ data, mode, onRunModel }) {
+export function RecommendationsPage({ data, mode, onRunModel, navigate }) {
   const recommendations = data.recommendations || [];
   const priorityCounts = { High: 0, Medium: 0, Low: 0 };
   recommendations.forEach((item) => {
@@ -300,12 +381,23 @@ export function RecommendationsPage({ data, mode, onRunModel }) {
     }
   });
 
-  return <div className="page-stack"><PageHeading eyebrow={data.recommendationsPeriod?.selected_month ? `Analysis period · ${data.recommendationsPeriod.selected_month}` : "Your next best moves"} title="Recommendations" description="Data-backed actions based on the configured user’s recorded financial history." actions={<Button icon={RefreshCw} variant="outline" disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>{data.modelLoading?.recommendations ? "Analyzing..." : "Refresh"}</Button>} />{recommendations.length ? <><div className="summary-grid"><SummaryCard label="Total recommendations" value={recommendations.length} format="number" icon={Lightbulb} tone="blue" /><SummaryCard label="High-priority recommendations" value={priorityCounts.High} format="number" icon={ShieldAlert} tone="rose" /><SummaryCard label="Medium-priority recommendations" value={priorityCounts.Medium} format="number" icon={CircleAlert} tone="amber" /><SummaryCard label="Low-priority recommendations" value={priorityCounts.Low} format="number" icon={BadgeCheck} tone="mint" /></div><div className="recommendation-list">{recommendations.map((item) => <RecommendationCard key={item.id || item.title} item={item} />)}</div></> : <EmptyState title="No recommendations available" description={data.recommendationsError || "Request analysis. No suggestions are fabricated when the AI service or required artifacts are unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>Get recommendations</Button>} />}</div>;
+  return <div className="page-stack"><PageHeading eyebrow={data.recommendationsPeriod?.selected_month ? `Analysis period · ${data.recommendationsPeriod.selected_month}` : "Your next best moves"} title="Recommendations" description="Data-backed actions based on the configured user’s recorded financial history." actions={<Button icon={RefreshCw} variant="outline" disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>{data.modelLoading?.recommendations ? "Analyzing..." : "Refresh"}</Button>} />{recommendations.length ? <><div className="summary-grid"><SummaryCard label="Total recommendations" value={recommendations.length} format="number" icon={Lightbulb} tone="blue" /><SummaryCard label="High-priority recommendations" value={priorityCounts.High} format="number" icon={ShieldAlert} tone="rose" /><SummaryCard label="Medium-priority recommendations" value={priorityCounts.Medium} format="number" icon={CircleAlert} tone="amber" /><SummaryCard label="Low-priority recommendations" value={priorityCounts.Low} format="number" icon={BadgeCheck} tone="mint" /></div><div className="recommendation-list">{recommendations.map((item) => <RecommendationCard key={item.id || item.title} item={item} onOpen={navigate} />)}</div></> : <EmptyState title="No recommendations available" description={data.recommendationsError || "Request analysis. No suggestions are fabricated when the AI service or required artifacts are unavailable."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.recommendations} onClick={() => onRunModel("recommendations", {}, "Recommendations")}>Get recommendations</Button>} />}</div>;
 }
 
-function RecommendationCard({ item }) {
+const RECOMMENDATION_LINKS = {
+  budget_warning: ["/budgets", "Review budgets"],
+  expense_reduction: ["/insights", "See spending insights"],
+  overspending: ["/simulator", "Plan in the simulator"],
+  saving_opportunity: ["/simulator", "Plan your savings"],
+  future_expense_warning: ["/forecasting", "View forecast"],
+  goal_progress: ["/goals", "Open goals"],
+  unusual_transaction_review: ["/anomalies", "Review transactions"],
+};
+
+function RecommendationCard({ item, onOpen }) {
   const tone = item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success";
-  return <article className="panel recommendation-card"><div className={`recommendation-icon ${tone}`}><Lightbulb size={19} /></div><div className="recommendation-content"><div className="recommendation-top"><StatusBadge tone={tone}>{item.priority || "Priority"}</StatusBadge><span className="recommendation-type">{item.type || item.recommendation_type || "Recommendation"}</span></div><h3>{item.title || item.recommendation_title}</h3><p>{item.description || item.recommendation_description}</p>{item.reason && <div className="reason-line"><InfoText />{item.reason}</div>}{item.supporting_values && <div className="support-values">{Object.entries(item.supporting_values).map(([name, value]) => <span key={name}>{name.replaceAll("_", " ")} <strong>{formatRecommendationSupportValue(name, value)}</strong></span>)}</div>}</div><span className="subtle-icon" aria-hidden="true"><ArrowRight size={17} /></span></article>;
+  const [to, label] = RECOMMENDATION_LINKS[item.type || item.recommendation_type] || ["/insights", "See insights"];
+  return <article className="panel recommendation-card"><div className={`recommendation-icon ${tone}`}><Lightbulb size={19} /></div><div className="recommendation-content"><div className="recommendation-top"><StatusBadge tone={tone}>{item.priority || "Priority"}</StatusBadge><span className="recommendation-type">{String(item.type || item.recommendation_type || "Recommendation").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</span></div><h3>{item.title || item.recommendation_title}</h3><p>{item.description || item.recommendation_description}</p>{item.reason && <div className="reason-line"><InfoText />{item.reason}</div>}{item.supporting_values && <div className="support-values">{Object.entries(item.supporting_values).map(([name, value]) => <span key={name}>{name.replaceAll("_", " ")} <strong>{formatRecommendationSupportValue(name, value)}</strong></span>)}</div>}</div><button className="recommendation-link" onClick={() => onOpen(to)} title={label}><span>{label}</span><ArrowRight size={15} /></button></article>;
 }
 function InfoText() { return <CircleAlert size={14} />; }
 
@@ -320,7 +412,7 @@ export function BudgetsPage({ data, mode, onSave, onDelete }) {
     const payload = { category: form.get("category"), amount: Number(form.get("amount")), month: form.get("month") };
     if (await onSave("budgets", payload, editing?.id)) setEditing(null);
   };
-  return <div className="page-stack"><PageHeading eyebrow={budgets[0]?.budget_month ? `Recorded budget · ${budgets[0].budget_month}` : "Plan with confidence"} title="Budgets" description="Set monthly limits and compare them with recorded expenses." actions={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} /><div className="summary-grid"><SummaryCard label="Monthly budget" value={total} icon={Wallet} tone="blue" /><SummaryCard label="Recorded spending" value={spent} icon={ArrowUpRight} tone="rose" /><SummaryCard label="Remaining" value={Math.max(0, total - spent)} icon={CircleDollarSign} tone="mint" /><SummaryCard label="Overall utilization" value={percent(total ? spent / total * 100 : 0)} icon={PieChart} tone="amber" /></div><div className="budget-page-grid">{budgets.length ? budgets.map((budget) => <article className="panel budget-card" key={budget.id}><div className="budget-card-top"><div><span className="budget-category-icon"><Wallet size={17} /></span><h3>{budget.category}</h3></div><details className="row-menu"><summary aria-label="Budget actions">···</summary><div className="row-menu-pop"><button onClick={() => setEditing(budget)}>Edit budget</button><button className="danger-action" onClick={() => onDelete("budgets", budget.id)}>Delete budget</button></div></details></div><div className="budget-amount">{currency(budget.spent)} <small>spent of {currency(budget.amount)}</small></div><BudgetProgress budget={budget} /><div className="budget-card-bottom"><span>{budget.budget_month || "Month not provided"}</span><StatusBadge tone={budget.spent > budget.amount ? "danger" : "success"}>{budget.spent > budget.amount ? "Over budget" : "On track"}</StatusBadge></div></article>) : <EmptyState title="No budgets yet" description="Create a monthly budget to keep spending on track." action={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} />}</div>{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={save}><header><div><h2>{editing.id ? "Edit budget" : "Create budget"}</h2><p>Choose a category and month for your limit.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Category<select name="category" defaultValue={editing.category || "Other"}>{(data.transactionCategories || []).map((item) => <option key={item}>{item}</option>)}</select></label><label>Monthly amount (₹)<input name="amount" type="number" min="1" required defaultValue={editing.amount || ""} /></label><label>Month<input name="month" type="month" required defaultValue={editing.budget_month || new Date().toISOString().slice(0, 7)} /></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">Save budget</Button></footer></form></div>}</div>;
+  return <div className="page-stack"><PageHeading eyebrow={budgets[0]?.budget_month ? `Recorded budget · ${budgets[0].budget_month}` : "Plan with confidence"} title="Budgets" description="Set monthly limits and compare them with recorded expenses." actions={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} /><div className="summary-grid"><SummaryCard label="Monthly budget" value={total} icon={Wallet} tone="blue" /><SummaryCard label="Recorded spending" value={spent} icon={ArrowUpRight} tone="rose" /><SummaryCard label="Remaining" value={Math.max(0, total - spent)} icon={CircleDollarSign} tone="mint" /><SummaryCard label="Overall utilization" value={percent(total ? spent / total * 100 : 0)} icon={PieChart} tone="amber" /></div><div className="budget-page-grid">{budgets.length ? budgets.map((budget) => <article className="panel budget-card" key={budget.id}><div className="budget-card-top"><div><span className="budget-category-icon"><Wallet size={17} /></span><h3>{budget.category}</h3></div><details className="row-menu"><summary aria-label="Budget actions">···</summary><div className="row-menu-pop"><button onClick={() => setEditing(budget)}>Edit budget</button><button className="danger-action" onClick={() => onDelete("budgets", budget.id)}>Delete budget</button></div></details></div><div className="budget-amount">{currency(budget.spent)} <small>spent of {currency(budget.amount)}</small></div><BudgetProgress budget={budget} /><div className="budget-card-bottom"><span>{budget.budget_month || "Month not provided"}</span><StatusBadge tone={budget.spent > budget.amount ? "danger" : "success"}>{budget.spent > budget.amount ? "Over budget" : "On track"}</StatusBadge></div></article>) : <EmptyState title="No budgets yet" description="Create a monthly budget to keep spending on track." action={<Button icon={Plus} onClick={() => setEditing({})}>Create budget</Button>} />}</div>{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={save}><header><div><h2>{editing.id ? "Edit budget" : "Create budget"}</h2><p>Choose a category and month for your limit.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Category<select name="category" defaultValue={editing.category || "Other"}>{(data.transactionCategories || []).map((item) => <option key={item}>{item}</option>)}</select></label><label>Monthly amount (₹)<input name="amount" type="number" min="1" required defaultValue={editing.amount || ""} /></label><label>Month<input name="month" type="month" required defaultValue={editing.budget_month || budgets[0]?.budget_month || data.overview?.analysis_period?.month || new Date().toISOString().slice(0, 7)} /></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">Save budget</Button></footer></form></div>}</div>;
 }
 
 export function GoalsPage({ data, mode, onSave, onDelete }) {
@@ -417,8 +509,9 @@ function WaterfallChart({ rows, baseValue, predictionValue }) {
 }
 
 export function ExplainabilityPage({ data, mode, onRunModel }) {
+  const location = useLocation();
   const explanation = data.explainability;
-  const [selected, setSelected] = useState("forecast");
+  const [selected, setSelected] = useState(() => location.state?.model || "forecast");
   const result = explanation?.[selected];
   const ready = result?.status === "available";
   const featureRows = result?.feature_contributions || result?.individual || [];
@@ -439,45 +532,82 @@ export function ExplainabilityPage({ data, mode, onRunModel }) {
   return <div className="page-stack"><PageHeading eyebrow="Inside the model" title="Explainable AI" description="View SHAP outputs only when the existing model and explanation pipeline return them." actions={<select className="select-button" value={selected} onChange={(event) => setSelected(event.target.value)}><option value="forecast">Expense forecast</option><option value="categorization">Transaction category</option><option value="anomaly">Anomaly score</option></select>} />{ready ? <>{result.is_historical && result.notice && <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{result.notice}</span></div>}<div className="info-strip"><BrainCircuit size={17} /><span>{result.explanation || "SHAP values explain model outputs relative to the selected reference data. They are not causal effects or proof of fraud."}</span></div>{featureRows.length > 0 && result.base_value != null && Number.isFinite(Number(result.base_value)) && <ChartCard title="SHAP waterfall" subtitle={result.score_type || "Cumulative feature contributions from baseline to model output"}><WaterfallChart rows={featureRows} baseValue={result.base_value} predictionValue={result.prediction_value ?? result.prediction ?? result.anomaly_score} /></ChartCard>}<div className="explainability-grid"><ChartCard title="Global feature importance" subtitle="Mean absolute SHAP value">{importance.length ? <FeatureImportanceChart data={importance} /> : <EmptyState title="No global SHAP values" description="This explanation returned local contributions only." />}</ChartCard><ChartCard title="Individual prediction" subtitle={result.prediction_label || result.forecast_month || "Local explanation"}>{featureRows.length ? <div className="contribution-list">{featureRows.slice(0, 8).map((row, index) => <div className="contribution-row" key={`${row.feature}-${index}`}><span>{row.feature}</span><div className="contribution-track"><i className={Number(row.shap_value) >= 0 ? "positive" : "negative"} style={{ width: `${Math.min(100, Math.abs(row.shap_value) * 30 + 8)}%` }} /></div><strong className={Number(row.shap_value) >= 0 ? "income-text" : "expense-text"}>{Number(row.shap_value) >= 0 ? "+" : ""}{Number(row.shap_value).toFixed(3)}</strong></div>)}</div> : <EmptyState title="No individual explanation" description="The API returned no local SHAP values for this request." />}</ChartCard></div>{featureRows.length > 0 && <FeatureTable rows={featureRows} title="Feature contribution details" />}</> : <EmptyState title={result?.status === "stale" ? "Explanation is stale" : result?.status === "unavailable" ? "SHAP explanation unavailable" : "No SHAP output available"} description={result?.reason || data.explainabilityError || "Request an explanation from a supported model. Stale predictions are not explained as current."} action={<Button icon={Activity} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={requestExplanation}>{data.modelLoading?.explainability ? "Explaining..." : "Request explanation"}</Button>} />}</div>;
 }
 
-export function SettingsPage({ data, mode, theme, onTheme, onSave, toast }) {
-  const [savedSettings] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("finai-settings") || "{}");
-    } catch {
-      return {};
-    }
-  });
-  const settings = data.settings || savedSettings;
+export function SettingsPage({ settings = {}, mode, theme, onTheme, onSave, toast, onReset }) {
   const [name, setName] = useState(settings.name || "");
   const [email, setEmail] = useState(settings.email || "");
   const [notifications, setNotifications] = useState(settings.notifications ?? true);
+  const [exporting, setExporting] = useState(false);
+  const photoInput = useRef(null);
+  const current = () => ({ ...settings, name: name.trim(), email: email.trim(), notifications });
   const save = async (event) => {
     event.preventDefault();
-    if (await onSave("settings", { ...settings, name, email, notifications })) {
-      toast("Preferences saved in this browser; profile details are not synced to an account.");
+    if (await onSave("settings", current())) toast("Preferences saved.");
+  };
+  const changePhoto = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const photo = await resizeImage(file);
+      if (await onSave("settings", { ...current(), photo })) toast("Profile photo updated.");
+    } catch (error) {
+      toast(error.message, "error");
     }
+  };
+  const removePhoto = async () => {
+    const { photo, ...rest } = current();
+    if (await onSave("settings", rest)) toast("Profile photo removed.");
+  };
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const count = await exportTransactionsCsv();
+      toast(`Exported ${count} transactions to a CSV file.`);
+    } catch (error) {
+      toast(`Export failed: ${errorMessage(error)}`, "error");
+    } finally {
+      setExporting(false);
+    }
+  };
+  const resetPreferences = () => {
+    if (!window.confirm("Reset your name, photo, notification and theme preferences in this browser?")) return;
+    clearSettings();
+    localStorage.removeItem("finai-theme");
+    setName("");
+    setEmail("");
+    setNotifications(true);
+    onReset();
+    toast("Preferences reset.");
   };
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="Make FinAI yours" title="Settings" description="Manage local preferences; profile and security APIs are not configured." />
+      <PageHeading eyebrow="Make FinAI yours" title="Settings" description="Your profile, notifications, appearance and data." />
       <div className="settings-layout">
         <form className="panel settings-panel" onSubmit={save}>
-          <div className="panel-heading"><div><h2>Local profile preferences</h2><p>These details are stored only in this browser.</p></div></div>
-          <div className="settings-profile"><span className="profile-avatar large">PF</span><div><strong>{name || "Your profile"}</strong><span>Profile photo upload is not connected</span></div><button className="button button-outline" type="button" onClick={() => toast("Profile photo upload requires an account API.")}>Change photo</button></div>
+          <div className="panel-heading"><div><h2>Profile</h2><p>Shown in the sidebar and top bar of this browser.</p></div></div>
+          <div className="settings-profile">
+            <Avatar name={name} photo={settings.photo} large />
+            <div><strong>{name || "Your profile"}</strong><span>{email || "Add your name and email below"}</span></div>
+            <input ref={photoInput} type="file" accept="image/*" hidden onChange={changePhoto} />
+            <div className="heading-actions">
+              {settings.photo && <button className="button button-ghost" type="button" onClick={removePhoto}>Remove</button>}
+              <button className="button button-outline" type="button" onClick={() => photoInput.current?.click()}>Change photo</button>
+            </div>
+          </div>
           <div className="form-grid">
-            <label>Full name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
-            <label>Email address<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+            <label>Full name<input value={name} placeholder="e.g. Priya Sharma" onChange={(event) => setName(event.target.value)} /></label>
+            <label>Email address<input type="email" value={email} placeholder="you@example.com" onChange={(event) => setEmail(event.target.value)} /></label>
             <label>Currency<select defaultValue="INR"><option value="INR">Indian Rupee (₹ INR)</option></select></label>
             <label>Region<select defaultValue="en-IN"><option value="en-IN">India</option></select></label>
           </div>
           <div className="settings-divider" />
-          <div className="setting-row"><div><strong>Notifications</strong><span>Get updates about budgets, goals and account activity.</span></div><button type="button" role="switch" aria-checked={notifications} className={`toggle ${notifications ? "on" : ""}`} onClick={() => setNotifications((value) => !value)}><i /></button></div>
+          <div className="setting-row"><div><strong>Notifications</strong><span>Show budget, goal and AI alerts under the bell icon.</span></div><button type="button" role="switch" aria-checked={notifications} aria-label="Notifications" className={`toggle ${notifications ? "on" : ""}`} onClick={() => setNotifications((value) => !value)}><i /></button></div>
           <div className="setting-row"><div><strong>Appearance</strong><span>Choose your preferred dashboard theme.</span></div><button type="button" className="button button-outline" onClick={onTheme}>{theme === "light" ? "Switch to dark" : "Switch to light"}</button></div>
           <footer><Button type="submit">Save preferences</Button></footer>
         </form>
         <div className="settings-aside">
-          <section className="panel settings-panel"><div className="setting-aside-icon"><LockKeyhole size={18} /></div><h3>Account security</h3><p>Authentication and security APIs are not implemented in this backend.</p><Button variant="outline" onClick={() => toast("Account security requires an authentication API.")}>Manage security</Button></section>
-          <section className="panel settings-panel"><div className="setting-aside-icon green"><BellRing size={18} /></div><h3>Data connection</h3><p>{mode === "live" ? "Connected to the configured backend API." : mode === "connecting" ? "Checking backend availability." : "Backend connection is unavailable."}</p><StatusBadge tone={mode === "live" ? "success" : "warning"}>{mode === "live" ? "API connected" : mode === "connecting" ? "Connecting" : "Unavailable"}</StatusBadge></section>
+          <section className="panel settings-panel"><div className="setting-aside-icon"><LockKeyhole size={18} /></div><h3>Privacy &amp; data</h3><p>Your financial data stays on this computer: FinAI only talks to the local API and database.</p><div className="settings-actions"><Button variant="outline" icon={Download} disabled={mode !== "live" || exporting} onClick={exportCsv}>{exporting ? "Exporting..." : "Export transactions (CSV)"}</Button><Button variant="ghost" icon={RefreshCw} onClick={resetPreferences}>Reset preferences</Button></div></section>
+          <section className="panel settings-panel"><div className="setting-aside-icon green"><BellRing size={18} /></div><h3>Data connection</h3><p>{mode === "live" ? "Connected to the FinAI backend and AI model service." : mode === "connecting" ? "Checking backend availability." : "Backend connection is unavailable."}</p><StatusBadge tone={mode === "live" ? "success" : "warning"}>{mode === "live" ? "API connected" : mode === "connecting" ? "Connecting" : "Unavailable"}</StatusBadge></section>
         </div>
       </div>
     </div>

@@ -8,6 +8,7 @@ import logging
 import os
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,37 @@ class CategorizeBody(BaseModel):
     items: list[dict[str, str]] = Field(min_length=1, max_length=100)
 
 
+# Executing a module imports heavy dependencies (scikit-learn, SHAP); doing that
+# from several request threads at once can deadlock the import system.
+_MODULE_LOCK = threading.RLock()
+_ENGINE_MODULE = None
+
+
+def _preload_libraries() -> None:
+    """Import the model libraries once at startup, before requests run in parallel."""
+    import sklearn.compose  # noqa: F401
+    import sklearn.ensemble  # noqa: F401
+    import sklearn.feature_extraction.text  # noqa: F401
+    import sklearn.impute  # noqa: F401
+    import sklearn.linear_model  # noqa: F401
+    import sklearn.pipeline  # noqa: F401
+    import sklearn.preprocessing  # noqa: F401
+
+    try:
+        import shap  # noqa: F401
+    except ImportError:
+        logger.warning("SHAP is not installed; explanations will be unavailable.")
+
+
+_preload_libraries()
+
+
 def _load_module(name: str, path: Path):
+    with _MODULE_LOCK:
+        return _exec_module(name, path)
+
+
+def _exec_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load AI module: {path.name}")
@@ -81,11 +112,16 @@ def _load_module(name: str, path: Path):
 
 
 def _recommendation_engine():
-    module = _load_module(
-        "_finai_recommendation_engine",
-        AI_SERVICE_DIR / "recommendation" / "engine.py",
-    )
-    return module.RecommendationEngine(database_path=DATABASE_PATH)
+    global _ENGINE_MODULE
+    with _MODULE_LOCK:
+        if _ENGINE_MODULE is None:
+            _ENGINE_MODULE = _exec_module(
+                "_finai_recommendation_engine",
+                AI_SERVICE_DIR / "recommendation" / "engine.py",
+            )
+    # A new engine per request keeps "today" current; saved models are cached
+    # inside the engine module.
+    return _ENGINE_MODULE.RecommendationEngine(database_path=DATABASE_PATH)
 
 
 def _analysis(
@@ -230,8 +266,9 @@ def categorize(body: CategorizeBody) -> dict[str, Any]:
             "_finai_categorization_training",
             AI_SERVICE_DIR / "categorization" / "train.py",
         )
-        vectorizer = joblib.load(vectorizer_path)
-        classifier = joblib.load(classifier_path)
+        with _MODULE_LOCK:
+            vectorizer = joblib.load(vectorizer_path)
+            classifier = joblib.load(classifier_path)
         results = []
         for index, item in enumerate(body.items):
             description = item.get("description", "").strip()
@@ -296,10 +333,15 @@ def anomalies(
                 "analysis_period": analysis["analysis_period"],
                 "items": [],
             }
-        items = [
-            {**item, "review_status": "Needs review"}
-            for item in result.get("transactions", [])
-        ]
+        # Most unusual first: higher scores are further from the user's normal pattern.
+        items = sorted(
+            (
+                {**item, "review_status": "Needs review"}
+                for item in result.get("transactions", [])
+            ),
+            key=lambda item: item.get("anomaly_score") or 0.0,
+            reverse=True,
+        )
         analyzed_count = int(result.get("analyzed_count", 0))
         return {
             "status": result.get("status", "unavailable"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import sys
+import threading
 from collections import Counter
 from datetime import date
 from importlib.util import module_from_spec, spec_from_file_location
@@ -82,6 +83,23 @@ DISCRETIONARY_CATEGORIES = {
     "subscription",
     "travel",
 }
+
+
+# Saved models are loaded once per file version and shared by all requests.
+# Loading is serialised: concurrent first-time loads import the same
+# scikit-learn modules from several threads, which can deadlock Python's
+# import system (seen when the dashboard runs all AI models at once).
+_ARTIFACT_LOCK = threading.RLock()
+_ARTIFACT_CACHE: dict[tuple[str, int], Any] = {}
+
+
+def _load_artifact(path: Path) -> Any:
+    resolved = Path(path).resolve()
+    key = (str(resolved), resolved.stat().st_mtime_ns)
+    with _ARTIFACT_LOCK:
+        if key not in _ARTIFACT_CACHE:
+            _ARTIFACT_CACHE[key] = joblib.load(resolved)
+        return _ARTIFACT_CACHE[key]
 
 
 def _quoted(identifier: str) -> str:
@@ -284,8 +302,8 @@ class RecommendationEngine:
             )
             return None
         try:
-            vectorizer = joblib.load(vectorizer_path)
-            classifier = joblib.load(classifier_path)
+            vectorizer = _load_artifact(vectorizer_path)
+            classifier = _load_artifact(classifier_path)
         except (OSError, EOFError, ValueError, ImportError) as exc:
             raise ValueError(
                 f"Unable to load categorization model artifacts: {exc}"
@@ -324,7 +342,8 @@ class RecommendationEngine:
             )
         categorization_training = module_from_spec(spec)
         try:
-            spec.loader.exec_module(categorization_training)
+            with _ARTIFACT_LOCK:
+                spec.loader.exec_module(categorization_training)
         except (ImportError, OSError, SyntaxError) as exc:
             raise RuntimeError(
                 "Unable to import the existing transaction text preparation helper."
@@ -367,8 +386,8 @@ class RecommendationEngine:
             )
             return None
         try:
-            model = joblib.load(model_path)
-            feature_columns = joblib.load(columns_path)
+            model = _load_artifact(model_path)
+            feature_columns = _load_artifact(columns_path)
         except (OSError, EOFError, ValueError, ImportError) as exc:
             raise ValueError(f"Unable to load forecast model artifacts: {exc}") from exc
         if (
@@ -525,7 +544,9 @@ class RecommendationEngine:
                 "skip_reason": f"Forecast prediction failed: {exc}",
             }
         forecast_month = latest_month + 1
-        is_stale = forecast_month <= pd.Period(self.today, freq="M")
+        # The current month is still in progress, so forecasting it is useful;
+        # only months that have already ended are stale.
+        is_stale = forecast_month < pd.Period(self.today, freq="M")
         if not np.isfinite(forecast):
             return {
                 "status": "unavailable",
@@ -563,7 +584,7 @@ class RecommendationEngine:
             )
             return None
         try:
-            artifacts = joblib.load(model_path)
+            artifacts = _load_artifact(model_path)
         except (OSError, EOFError, ValueError, ImportError) as exc:
             raise ValueError(f"Unable to load behavioral anomaly model: {exc}") from exc
         required = {"pooled_model", "type_models", "user_models", "metadata"}
@@ -588,7 +609,8 @@ class RecommendationEngine:
             if str(directory) not in sys.path:
                 sys.path.insert(0, str(directory))
         try:
-            from behavioral_experiment import prepare_experiment_features
+            with _ARTIFACT_LOCK:
+                from behavioral_experiment import prepare_experiment_features
         except ImportError as exc:
             raise RuntimeError(
                 "Unable to import behavioral anomaly feature preparation."
@@ -1474,7 +1496,7 @@ class RecommendationEngine:
             predicted = _number(forecast.get("predicted_expense"))
             if forecast_month is not None and predicted is not None:
                 current_calendar_month = pd.Period(self.today, freq="M")
-                if forecast_month <= current_calendar_month:
+                if forecast_month < current_calendar_month:
                     forecast["status"] = "stale"
                     forecast["skip_reason"] = (
                         f"Forecast month {forecast_month} is not later than the "

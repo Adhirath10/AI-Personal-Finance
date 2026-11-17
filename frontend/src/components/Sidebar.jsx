@@ -19,6 +19,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
+import { Avatar } from "./UI";
 
 const navigation = [
   { label: "Overview", to: "/", icon: LayoutDashboard },
@@ -33,7 +34,7 @@ const navigation = [
   { label: "Explainable AI", to: "/explainability", icon: Activity, section: "INTELLIGENCE" },
 ];
 
-export default function Sidebar({ open, onClose, collapsed, onCollapse, recommendationCount = 0 }) {
+export default function Sidebar({ open, onClose, collapsed, onCollapse, recommendationCount = 0, profile = {}, onWorkspace, onHelp }) {
   return (
     <>
       <div className={`sidebar-scrim ${open ? "visible" : ""}`} onClick={onClose} />
@@ -43,9 +44,9 @@ export default function Sidebar({ open, onClose, collapsed, onCollapse, recommen
           {!collapsed && <span>Fin<span className="brand-ai">AI</span></span>}
           <button className="icon-btn sidebar-close mobile-only" aria-label="Close navigation" onClick={onClose}><X size={18} /></button>
         </div>
-        <button className="workspace-switch" title="Personal workspace">
-          <span className="workspace-avatar">AS</span>
-          {!collapsed && <span className="workspace-name">Personal workspace<small>Free plan</small></span>}
+        <button className="workspace-switch" title="Open profile settings" onClick={() => { onClose(); onWorkspace(); }}>
+          <Avatar name={profile.name} photo={profile.photo} />
+          {!collapsed && <span className="workspace-name">{profile.name || "Personal workspace"}<small>{profile.email || "Profile & preferences"}</small></span>}
           {!collapsed && <ChevronLeft size={15} className="workspace-chevron" />}
         </button>
         <nav className="sidebar-nav" aria-label="Main navigation">
@@ -70,10 +71,10 @@ export default function Sidebar({ open, onClose, collapsed, onCollapse, recommen
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="sidebar-help">
-            {!collapsed && <><div className="help-icon"><CircleHelp size={17} /></div><div><strong>Need a hand?</strong><small>Explore help center</small></div></>}
+          <button className="sidebar-help" onClick={() => { onClose(); onHelp(); }} title="Open the FinAI guide">
+            {!collapsed && <><div className="help-icon"><CircleHelp size={17} /></div><div><strong>Need a hand?</strong><small>Open the FinAI guide</small></div></>}
             {collapsed && <CircleHelp size={18} />}
-          </div>
+          </button>
           <NavLink to="/settings" onClick={onClose} title={collapsed ? "Settings" : undefined} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}>
             <Settings size={18} strokeWidth={1.8} />{!collapsed && <span>Settings</span>}
           </NavLink>

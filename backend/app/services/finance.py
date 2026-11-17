@@ -588,11 +588,12 @@ def _budget_item(row, spent: float) -> dict:
     }
 
 
-def list_budgets(db: Session, user_id: str) -> dict:
-    month = db.execute(
-        text("SELECT MAX(budget_month) FROM monthly_budgets WHERE user_id = :user_id"),
-        {"user_id": user_id},
-    ).scalar_one()
+def list_budgets(db: Session, user_id: str, month: str | None = None) -> dict:
+    if month is None:
+        month = db.execute(
+            text("SELECT MAX(budget_month) FROM monthly_budgets WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        ).scalar_one()
     if month is None:
         period = analysis_period(db, user_id)
         month = period["month"] if period else date.today().strftime("%Y-%m")
