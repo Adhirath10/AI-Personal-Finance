@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import math
 import os
 import random
 import sqlite3
@@ -133,12 +134,101 @@ def _insert(connection: sqlite3.Connection, table: str, row: dict) -> None:
     )
 
 
+# How much of a month's income goes on spending, by calendar month (1.0 = typical).
+# Festival and year-end months run higher; February and June quieter.
+SEASONAL_SPENDING = {1: 0.98, 2: 0.95, 3: 1.02, 4: 0.99, 5: 1.03, 6: 0.96,
+                     7: 0.97, 8: 1.01, 9: 0.98, 10: 1.06, 11: 1.08, 12: 1.05}
+MIN_SPENDING_SHARE = 0.62  # at most 38% saved
+MAX_SPENDING_SHARE = 0.78  # at least 22% saved
+
+
+def _kind(row: dict) -> str:
+    return str(row["transaction_type"]).strip().casefold()
+
+
+def _median(values: list[float]) -> float | None:
+    values = sorted(value for value in values if value > 0)
+    if not values:
+        return None
+    middle = len(values) // 2
+    return values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+
+
+def _round_to(value: float, step: int) -> float:
+    return float(max(step, round(value / step) * step))
+
+
+def _profile_income(connection: sqlite3.Connection, user_id: str) -> float | None:
+    if "monthly_income" not in _columns(connection, "users"):
+        return None
+    row = connection.execute("SELECT monthly_income FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    try:
+        return float(row[0]) if row and row[0] is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _plan_month(rng, month, through, template_rows, salary_template, *, income, spending_target,
+                expense_growth, has_income, highlight_template=None, highlight_amount=0.0):
+    """Return [(date, template_row, amount)] for one month that matches the budget plan."""
+    last_day = calendar.monthrange(month.year, month.month)[1]
+
+    def on_day(day: int) -> date:
+        return month.replace(day=min(max(1, day), last_day))
+
+    planned = []
+    if not has_income:
+        planned.append((on_day(_parse_date(salary_template["transaction_date"]).day), salary_template, income))
+
+    expenses = [row for row in template_rows if _kind(row) == "expense"]
+    recurring = [row for row in expenses if row.get("is_recurring")]
+    everyday = [row for row in expenses if not row.get("is_recurring")]
+
+    # Fixed costs keep their price; large ones (rent, EMIs) rise once a year.
+    fixed = []
+    for row in recurring:
+        amount = float(row["amount"])
+        fixed.append(_round_to(amount * expense_growth, 100) if amount >= 5000 else round(amount, 2))
+    # If large fixed costs (rent) take more than half the plan, the household lives
+    # somewhere cheaper: shrink only those, to round figures; subscriptions keep their price.
+    large = sum(amount for amount in fixed if amount >= 5000)
+    small = sum(amount for amount in fixed if amount < 5000)
+    if large and large + small > 0.5 * spending_target:
+        factor = max(0.5 * spending_target - small, 0.0) / large
+        fixed = [_round_to(amount * factor, 500) if amount >= 5000 else amount for amount in fixed]
+    fixed_total = sum(fixed)
+    planned += [(on_day(_parse_date(row["transaction_date"]).day), row, amount) for row, amount in zip(recurring, fixed)]
+
+    # Everyday spending fills the rest of the target: drop or repeat purchases so
+    # individual amounts stay close to the user's usual ones. A big one-off purchase
+    # means cutting back elsewhere that month.
+    available = max(spending_target - fixed_total - highlight_amount, 0.1 * spending_target)
+    rows = list(everyday)
+    rng.shuffle(rows)
+    total = lambda items: sum(float(row["amount"]) for row in items) or 1.0
+    while rows and available / total(rows) < 0.8 and len(rows) > 4:
+        rows.pop()
+    pool = list(everyday) or rows
+    while pool and available / total(rows) > 1.25 and len(rows) < 3 * max(1, len(everyday)):
+        rows.append({**rng.choice(pool), "_day": rng.randint(1, last_day)})
+    scale = available / total(rows) if rows else 0.0
+    for row in rows:
+        amount = max(10.0, float(round(float(row["amount"]) * scale * rng.uniform(0.88, 1.12))))
+        day = row.get("_day") or _parse_date(row["transaction_date"]).day
+        planned.append((on_day(day), row, amount))
+
+    if highlight_template is not None:
+        planned.append((on_day(18), highlight_template, highlight_amount))
+    return [item for item in planned if item[0] <= through]
+
+
 def add_recent_data(
     connection: sqlite3.Connection,
     user_id: str,
     through: date,
     *,
     highlight: bool = True,
+    savings_rate: float | None = None,
 ) -> dict:
     connection.row_factory = sqlite3.Row
     if connection.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone() is None:
@@ -152,116 +242,137 @@ def add_recent_data(
             (user_id,),
         )
     ]
-    expenses = [row for row in transactions if str(row["transaction_type"]).casefold() == "expense"]
+    expenses = [row for row in transactions if _kind(row) == "expense"]
     if not expenses:
         raise SystemExit(f"User {user_id!r} has no recorded expenses to base new months on.")
 
     by_month: dict[str, list[dict]] = {}
+    income_by_month: dict[str, float] = {}
+    expense_by_month: dict[str, float] = {}
     for row in transactions:
-        by_month.setdefault(str(row["transaction_date"])[:7], []).append(row)
-    expense_months = sorted({str(row["transaction_date"])[:7] for row in expenses})
+        key = str(row["transaction_date"])[:7]
+        by_month.setdefault(key, []).append(row)
+        totals = income_by_month if _kind(row) == "income" else expense_by_month if _kind(row) == "expense" else None
+        if totals is not None:
+            totals[key] = totals.get(key, 0.0) + float(row["amount"])
+    expense_months = sorted(expense_by_month)
 
     first_new = _add_months(_month_start(_parse_date(expense_months[-1] + "-01")), 1)
     last_new = _month_start(through)
     if first_new > last_new:
-        return {"months": [], "transactions": 0, "budgets": 0}
+        return {"months": [], "transactions": 0, "budgets": 0, "totals": {}}
+
+    # The household plan: the user's usual income, and a realistic share of it spent.
+    typical_expense = _median(list(expense_by_month.values())) or 0.0
+    base_income = max(
+        [value for value in (_median(list(income_by_month.values())), _profile_income(connection, user_id)) if value]
+        or [typical_expense / 0.7]
+    )
+    if savings_rate is not None:
+        spending_share = min(max(1 - savings_rate, 0.2), 0.95)
+    else:
+        spending_share = min(max(typical_expense / base_income, MIN_SPENDING_SHARE), MAX_SPENDING_SHARE)
+
+    income_rows = [row for row in transactions if _kind(row) == "income"]
+    if income_rows:
+        latest_income_month = max(str(row["transaction_date"])[:7] for row in income_rows)
+        salary_template = dict(max(
+            (row for row in income_rows if str(row["transaction_date"])[:7] == latest_income_month),
+            key=lambda row: float(row["amount"]),
+        ))
+    else:
+        salary_template = dict(expenses[-1])
+        salary_template.update({
+            "transaction_type": "Income", "category": "Salary", "subcategory": "Salary",
+            "description": "Salary credit", "merchant": "Employer", "is_recurring": 1,
+            "transaction_date": str(expenses[-1]["transaction_date"])[:8] + "01",
+        })
 
     columns = set(_columns(connection, "transactions"))
-    balance = float(transactions[-1].get("balance_after_transaction") or 0.0)
-    budget_rows: dict[str, list[dict]] = {}
-    if _has_table(connection, "monthly_budgets"):
-        for row in connection.execute(
-            "SELECT * FROM monthly_budgets WHERE user_id = ? AND budget_id NOT LIKE ?",
-            (user_id, f"{DEMO_PREFIX}%"),
-        ):
-            budget_rows.setdefault(str(row["budget_month"]), []).append(dict(row))
+    history_year = int(expense_months[-1][:4])
+    highlight_month = _add_months(last_new, -1) if _add_months(last_new, -1) >= first_new else last_new
 
-    summary = {"months": [], "transactions": 0, "budgets": 0}
+    plan: dict[str, list] = {}
     month = first_new
     while month <= last_new:
         key = _month_key(month)
-        # Same calendar month from the most recent recorded year.
-        template_key = max(
-            (candidate for candidate in expense_months if candidate[5:] == key[5:]),
-            default=expense_months[-1],
-        )
-        years_ahead = max(1, month.year - int(template_key[:4]))
-        expense_growth = EXPENSE_GROWTH_PER_YEAR ** years_ahead
-        income_growth = INCOME_GROWTH_PER_YEAR ** years_ahead
         rng = random.Random(f"{user_id}-{key}")
-        has_income = any(
-            str(row["transaction_type"]).casefold() == "income" for row in by_month.get(key, [])
-        )
-        last_day = calendar.monthrange(month.year, month.month)[1]
-        generated = []
-        for row in by_month[template_key]:
-            kind = str(row["transaction_type"]).casefold()
-            if kind == "income" and has_income:
-                continue  # keep income the user already entered for this month
-            day = min(_parse_date(row["transaction_date"]).day, last_day)
-            new_date = month.replace(day=day)
-            if new_date > through:
-                continue
-            amount = float(row["amount"])
-            if kind == "income":
-                amount *= income_growth
-            elif row.get("is_recurring"):
-                amount *= expense_growth
-            else:
-                amount *= expense_growth * rng.uniform(0.85, 1.18)
-            generated.append((new_date, row, round(amount, 2)))
-
-        if highlight and month == last_new and through >= _add_months(month, 1) - timedelta(days=1):
+        years_ahead = max(0, month.year - history_year)  # yearly raise / price rise
+        income = _round_to(base_income * INCOME_GROWTH_PER_YEAR ** years_ahead, 100)
+        spending_target = income * spending_share * SEASONAL_SPENDING[month.month] * rng.uniform(0.96, 1.04)
+        # Same calendar month from the most recent recorded year.
+        template_key = max((m for m in expense_months if m[5:] == key[5:]), default=expense_months[-1])
+        highlight_template = None
+        highlight_amount = 0.0
+        if highlight and month == highlight_month:
             shopping = [r for r in expenses if str(r["category"]).casefold() == "shopping"] or expenses
-            typical = sorted(float(r["amount"]) for r in expenses if not r.get("is_recurring"))
-            amount = max(20000.0, round(4 * typical[int(len(typical) * 0.95) - 1], -2))
-            template = dict(shopping[-1])
-            template.update({"description": "Laptop purchase", "merchant": "Croma", "is_recurring": 0})
-            generated.append((month.replace(day=min(18, last_day)), template, amount))
+            highlight_template = {**shopping[-1], "description": "Electronics purchase", "merchant": "Croma", "is_recurring": 0}
+            # A store price (x,990) sized to the household's income.
+            highlight_amount = min(_round_to(0.18 * income, 1000), 60000.0) - 10
+        plan[key] = _plan_month(
+            rng, month, through, by_month[template_key], salary_template,
+            income=income, spending_target=spending_target,
+            expense_growth=EXPENSE_GROWTH_PER_YEAR ** years_ahead,
+            has_income=key in income_by_month,
+            highlight_template=highlight_template, highlight_amount=highlight_amount,
+        )
+        month = _add_months(month, 1)
 
-        generated.sort(key=lambda item: item[0])
-        for index, (new_date, template, amount) in enumerate(generated, start=1):
-            row = dict(template)
-            kind = str(row["transaction_type"]).casefold()
+    balance = float(transactions[-1].get("balance_after_transaction") or 0.0)
+    summary = {"months": list(plan), "transactions": 0, "budgets": 0, "totals": {}}
+    category_spend: dict[str, list[float]] = {}
+    for key, planned in plan.items():
+        planned.sort(key=lambda item: item[0])
+        month_totals = {"income": 0.0, "expenses": 0.0}
+        month_categories: dict[str, float] = {}
+        for index, (new_date, template, amount) in enumerate(planned, start=1):
+            row = {name: value for name, value in template.items() if not name.startswith("_")}
+            kind = _kind(row)
             balance += amount if kind == "income" else -amount
-            row.update(
-                {
-                    "transaction_id": f"{DEMO_PREFIX}{user_id}-{key.replace('-', '')}-{index:03d}",
-                    "transaction_date": new_date.isoformat() + str(template["transaction_date"])[10:],
-                    "amount": amount,
-                    "balance_after_transaction": round(balance, 2),
-                }
-            )
-            for name, value in {
+            month_totals["income" if kind == "income" else "expenses"] += amount
+            if kind == "expense":
+                month_categories[str(row["category"])] = month_categories.get(str(row["category"]), 0.0) + amount
+            row.update({
+                "transaction_id": f"{DEMO_PREFIX}{user_id}-{key.replace('-', '')}-{index:03d}",
+                "transaction_date": new_date.isoformat() + str(template["transaction_date"])[10:],
+                "amount": amount,
+                "balance_after_transaction": round(balance, 2),
                 "is_anomaly": 0,
                 "anomaly_type": None,
                 "day_of_week": new_date.weekday(),
                 "month": new_date.month,
                 "year": new_date.year,
-            }.items():
-                if name in columns:
-                    row[name] = value
+            })
             _insert(connection, "transactions", {k: v for k, v in row.items() if k in columns})
-        summary["transactions"] += len(generated)
+        summary["transactions"] += len(planned)
+        summary["totals"][key] = month_totals
+        for category, amount in month_categories.items():
+            category_spend.setdefault(category, []).append(amount)
 
-        templates = budget_rows.get(template_key) or (
-            budget_rows[max(budget_rows)] if budget_rows else []
-        )
-        for index, template in enumerate(templates, start=1):
-            row = dict(template)
-            row.update(
-                {
-                    "budget_id": f"{DEMO_PREFIX}BUD-{user_id}-{key.replace('-', '')}-{index:02d}",
-                    "budget_month": key,
-                    "budget_amount": round(float(template["budget_amount"]) * expense_growth, -2),
-                }
+    # Budgets: one steady monthly limit per category, a little above usual spending.
+    if _has_table(connection, "monthly_budgets"):
+        existing = [
+            dict(row) for row in connection.execute(
+                "SELECT * FROM monthly_budgets WHERE user_id = ? AND budget_id NOT LIKE ? ORDER BY budget_month",
+                (user_id, f"{DEMO_PREFIX}%"),
             )
-            _insert(connection, "monthly_budgets", row)
-        if templates:
+        ]
+        categories = sorted({str(row["category"]) for row in existing} & set(category_spend)) or sorted(
+            category_spend, key=lambda name: -sum(category_spend[name])
+        )[:6]
+        template = existing[-1] if existing else {}
+        budget_columns = set(_columns(connection, "monthly_budgets"))
+        for key in plan:
+            for index, category in enumerate(categories, start=1):
+                usual = (_median(category_spend[category]) or 0.0) * 1.1
+                step = 500 if usual >= 2000 else 100
+                limit = float(max(step, math.ceil(usual / step) * step))  # round up, like a real limit
+                row = {**template, "user_id": user_id, "budget_month": key, "category": category,
+                       "budget_id": f"{DEMO_PREFIX}BUD-{user_id}-{key.replace('-', '')}-{index:02d}",
+                       "budget_amount": limit, "actual_amount": 0.0, "variance_amount": limit, "exceeded": 0}
+                _insert(connection, "monthly_budgets", {k: v for k, v in row.items() if k in budget_columns})
+                summary["budgets"] += 1
             _sync_budget_actuals(connection, user_id, key)
-        summary["budgets"] += len(templates)
-        summary["months"].append(key)
-        month = _add_months(month, 1)
     return summary
 
 
@@ -297,7 +408,8 @@ def parse_arguments(argv=None):
         type=date.fromisoformat,
         help="Last date to generate (YYYY-MM-DD). Default: the end of last month, so every new month is complete.",
     )
-    parser.add_argument("--no-highlight", action="store_true", help="Do not add the one unusual purchase in the latest month.")
+    parser.add_argument("--savings-rate", type=float, help="Average share of income saved, e.g. 0.3 for 30%%. Default: from the user's history, kept between 25%% and 45%%.")
+    parser.add_argument("--no-highlight", action="store_true", help="Do not add the one unusual electronics purchase (in the month before the latest).")
     parser.add_argument("--remove", action="store_true", help="Remove previously generated DEMO- rows and exit.")
     parser.add_argument("--status", action="store_true", help="Show which database and user the app uses and their latest data, then exit.")
     return parser.parse_args(argv)
@@ -353,7 +465,10 @@ def main(argv=None) -> int:
             connection.commit()
             print(f"Removed generated rows for {args.user_id}: {removed}")
             return 0
-        summary = add_recent_data(connection, args.user_id, through, highlight=not args.no_highlight)
+        summary = add_recent_data(
+            connection, args.user_id, through,
+            highlight=not args.no_highlight, savings_rate=args.savings_rate,
+        )
         connection.commit()
     finally:
         connection.close()
@@ -364,6 +479,12 @@ def main(argv=None) -> int:
         f"Added {summary['transactions']} transactions and {summary['budgets']} budgets for "
         f"{args.user_id}: {summary['months'][0]} to {summary['months'][-1]} (through {through})."
     )
+    print(f"\n{'Month':<9}{'Income':>12}{'Expenses':>12}{'Saved':>8}")
+    for key, totals in summary["totals"].items():
+        income, spent = totals["income"], totals["expenses"]
+        saved = f"{(income - spent) / income:.0%}" if income else "-"
+        print(f"{key:<9}{'Rs ' + format(round(income), ','):>12}{'Rs ' + format(round(spent), ','):>12}{saved:>8}")
+    print()
     with sqlite3.connect(database) as connection:
         latest, latest_expense, generated, _ = _latest(connection, args.user_id)
     print(f"Check: latest expense for {args.user_id} is now {latest_expense} ({generated} generated rows).")

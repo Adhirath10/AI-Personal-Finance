@@ -126,7 +126,8 @@ npm --prefix frontend run dev
 
 The dataset ends in 2025, so forecasts would be for months that have already
 passed. To show current data for one user, generate recent months from that
-user's own history (run from the project root):
+user's own history: their merchants and categories, a monthly salary, and
+spending that leaves a realistic 22–38% of income saved (run from the project root):
 
 ```bash
 python scripts/add_recent_data.py

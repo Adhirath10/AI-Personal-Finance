@@ -61,7 +61,7 @@ def test_adds_complete_recent_months_and_can_be_rerun_and_removed(tmp_path):
     )]
     assert months == ["2026-01", "2026-02", "2026-03"]
     # February has 28 days: the template's 31st is moved to the 28th.
-    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_date = '2026-02-28' AND description = 'Dinner'") == 1
+    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_date = '2026-02-28' AND description = 'Dinner'") >= 1
     assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE merchant = 'Croma'") == 1
     assert _count(connection, "SELECT COUNT(*) FROM monthly_budgets WHERE budget_id LIKE 'DEMO-%'") == 3
     assert _count(connection, "SELECT actual_amount > 0 FROM monthly_budgets WHERE budget_id LIKE 'DEMO-%' AND budget_month = '2026-03'") == 1
@@ -87,3 +87,28 @@ def test_keeps_income_the_user_already_entered_and_skips_future_days(tmp_path):
 
     assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_type = 'Income' AND substr(transaction_date, 1, 7) = '2026-01'") == 1
     assert _count(connection, "SELECT MAX(transaction_date) FROM transactions WHERE transaction_id LIKE 'DEMO-%'") <= "2026-02-10"
+
+
+def test_generated_months_look_like_a_real_household_budget(tmp_path):
+    connection = _database(tmp_path / "finance.db")
+    # A history where spending exceeded income.
+    connection.execute("UPDATE transactions SET amount = 12000 WHERE transaction_type = 'Income'")
+    connection.execute(
+        "INSERT INTO transactions VALUES ('S1', 'U001', '2025-12-05', 'Netflix', 'Netflix', 649, "
+        "'Expense', 'Subscription', 'Other', 'Card', 'Savings', 1, 0, NULL, 1000, 0, 12, 2025)"
+    )
+
+    summary = add_recent.add_recent_data(connection, "U001", date(2026, 12, 31))
+
+    for month, totals in summary["totals"].items():
+        assert totals["income"] > totals["expenses"], month
+        assert 0.10 <= 1 - totals["expenses"] / totals["income"] <= 0.45, month
+    salaries = connection.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT amount) FROM transactions "
+        "WHERE transaction_id LIKE 'DEMO-%' AND transaction_type = 'Income'"
+    ).fetchone()
+    assert tuple(salaries) == (12, 1)
+    assert {row[0] for row in connection.execute(
+        "SELECT amount FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND description = 'Netflix'"
+    )} == {649}
+    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE merchant = 'Croma' AND transaction_date LIKE '2026-11%'") == 1
