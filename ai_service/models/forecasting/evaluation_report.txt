@@ -1,0 +1,15 @@
+Expense Forecasting Evaluation Report
+========================================
+Database: None
+
+Baseline (Moving Average):
+MAE: 133876.2727
+RMSE: 144147.8280
+MAPE: 100.0000%
+
+Machine Learning Model (Random Forest):
+MAE: 47372.2909
+RMSE: 55908.5600
+MAPE: 38.8191%
+
+Better model: ML model

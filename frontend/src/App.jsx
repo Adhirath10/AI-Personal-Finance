@@ -1,0 +1,458 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import {
+  AnomaliesPage,
+  BudgetsPage,
+  ExplainabilityPage,
+  ForecastPage,
+  GoalsPage,
+  InsightsPage,
+  OverviewPage,
+  RecommendationsPage,
+  SettingsPage,
+  SimulatorPage,
+  TransactionsPage,
+} from "./pages/Pages.jsx";
+import Navbar from "./components/Navbar.jsx";
+import Sidebar from "./components/Sidebar.jsx";
+import { EmptyState, LoadingSkeleton } from "./components/UI.jsx";
+import {
+  checkBackend,
+  createResource,
+  deleteResource,
+  errorMessage,
+  getResource,
+  runModel,
+  updateResource,
+} from "./services/api.js";
+import { ArrowUpRight, Check, CircleAlert, X } from "lucide-react";
+
+const resourceNames = [
+  "overview",
+  "transactions",
+  "transactionCategories",
+  "budgets",
+  "goals",
+];
+
+function normalizeResource(name, payload) {
+  if (name === "transactions" || name === "budgets" || name === "goals" || name === "recommendations" || name === "insights") {
+    if (Array.isArray(payload)) return payload;
+    return payload?.items || payload?.[name] || [];
+  }
+  return payload;
+}
+
+function titleFor(pathname) {
+  if (pathname === "/") return "Overview";
+  return pathname
+    .split("/")
+    .filter(Boolean)[0]
+    ?.replaceAll("-", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Overview";
+}
+
+export default function App() {
+  const [mode, setMode] = useState("connecting");
+  const [data, setData] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [resourceLoading, setResourceLoading] = useState({});
+  const [resourceErrors, setResourceErrors] = useState({});
+  const [theme, setTheme] = useState(() => localStorage.getItem("finai-theme") || "light");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [search, setSearch] = useState("");
+  const [transactionMeta, setTransactionMeta] = useState({ total: 0, limit: 7, offset: 0 });
+  const [transactionLoading, setTransactionLoading] = useState(false);
+  const transactionQuery = useRef({ limit: 7, offset: 0 });
+  const transactionRequest = useRef(0);
+  const refreshInFlight = useRef(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [toastKind, setToastKind] = useState("success");
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const notify = useCallback((message, kind = "success") => {
+    setToastKind(kind);
+    setToast(message);
+    window.clearTimeout(notify.timeout);
+    notify.timeout = window.setTimeout(() => setToast(null), 4200);
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setMode("connecting");
+    setResourceErrors({});
+    try {
+      await checkBackend();
+      setMode("live");
+      const results = await Promise.allSettled(resourceNames.map((name) => getResource(name)));
+      const nextData = {};
+      const errors = {};
+      results.forEach((result, index) => {
+        const name = resourceNames[index];
+        if (result.status === "fulfilled") {
+          if (name === "overview") {
+            nextData.overview = result.value;
+            nextData.monthly = result.value.monthly || [];
+            nextData.categories = result.value.categories || [];
+            nextData.recentTransactions = result.value.transactions || [];
+            nextData.activity = result.value.activity || null;
+          } else if (name === "transactions") {
+            nextData.transactions = normalizeResource(name, result.value);
+            nextData.transactionMeta = {
+              total: result.value.total || 0,
+              limit: result.value.limit || 7,
+              offset: result.value.offset || 0,
+            };
+          } else if (name === "transactionCategories") {
+            nextData.transactionCategories = normalizeResource(name, result.value);
+          } else {
+            nextData[name] = normalizeResource(name, result.value);
+          }
+        } else {
+          errors[`${name}Error`] = `${name} endpoint unavailable: ${errorMessage(result.reason)}`;
+        }
+      });
+      setData(nextData);
+      setTransactionMeta(nextData.transactionMeta || { total: 0, limit: 7, offset: 0 });
+      setResourceErrors(errors);
+    } catch (error) {
+      setMode("unavailable");
+      setData({});
+      setResourceErrors({
+        connectionError: `Backend connection failed: ${errorMessage(error)}`,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("finai-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const currentData = useMemo(
+    () => ({ ...data, ...resourceErrors, modelLoading: resourceLoading }),
+    [data, resourceErrors, resourceLoading],
+  );
+  const overviewData = useMemo(() => {
+    if (!search) return currentData;
+    const term = search.toLowerCase();
+    return {
+      ...currentData,
+      recentTransactions: (currentData.recentTransactions || []).filter((row) =>
+        `${row.description} ${row.merchant} ${row.category} ${row.id}`.toLowerCase().includes(term),
+      ),
+    };
+  }, [currentData, search]);
+
+  const fetchTransactions = useCallback(async (params = {}) => {
+    transactionQuery.current = params;
+    const requestId = ++transactionRequest.current;
+    setTransactionLoading(true);
+    try {
+      const result = await getResource("transactions", params);
+      if (requestId !== transactionRequest.current) return false;
+      setData((current) => ({ ...current, transactions: result.items || [] }));
+      setTransactionMeta({
+        total: result.total || 0,
+        limit: result.limit || params.limit || 7,
+        offset: result.offset || params.offset || 0,
+      });
+      setResourceErrors((current) => {
+        const { transactionsError, ...rest } = current;
+        return rest;
+      });
+      return true;
+    } catch (error) {
+      if (requestId !== transactionRequest.current) return false;
+      setResourceErrors((current) => ({
+        ...current,
+        transactionsError: `Transactions unavailable: ${errorMessage(error)}`,
+      }));
+      return false;
+    } finally {
+      if (requestId === transactionRequest.current) setTransactionLoading(false);
+    }
+  }, []);
+
+  const refreshLiveData = useCallback(async () => {
+    if (mode !== "live" || loading || refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    setRefreshing(true);
+    try {
+      const [overviewResult, budgetsResult] = await Promise.allSettled([
+        getResource("overview"),
+        getResource("budgets"),
+      ]);
+      setResourceErrors((current) => {
+        const next = { ...current };
+        if (overviewResult.status === "fulfilled") {
+          delete next.overviewError;
+        } else {
+          next.overviewError = `Activity refresh failed: ${errorMessage(overviewResult.reason)}`;
+        }
+        if (budgetsResult.status === "fulfilled") {
+          delete next.budgetsError;
+        } else {
+          next.budgetsError = `Budgets refresh failed: ${errorMessage(budgetsResult.reason)}`;
+        }
+        return next;
+      });
+      if (overviewResult.status === "fulfilled") {
+        const result = overviewResult.value;
+        setData((current) => ({
+          ...current,
+          overview: result,
+          monthly: result.monthly || [],
+          categories: result.categories || [],
+          recentTransactions: result.transactions || [],
+          activity: result.activity || null,
+        }));
+      }
+      if (budgetsResult.status === "fulfilled") {
+        setData((current) => ({
+          ...current,
+          budgets: normalizeResource("budgets", budgetsResult.value),
+        }));
+      }
+      if (location.pathname === "/transactions") {
+        await fetchTransactions(transactionQuery.current);
+      }
+    } finally {
+      refreshInFlight.current = false;
+      setRefreshing(false);
+    }
+  }, [fetchTransactions, loading, location.pathname, mode]);
+
+  useEffect(() => {
+    if (mode !== "live" || loading) return undefined;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshLiveData();
+    };
+    const interval = window.setInterval(refreshWhenVisible, 30000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [loading, mode, refreshLiveData]);
+
+  const saveResource = useCallback(async (resource, payload, id) => {
+    if (resource === "settings") {
+      try {
+        localStorage.setItem("finai-settings", JSON.stringify(payload));
+        setData((current) => ({ ...current, settings: payload }));
+        return true;
+      } catch (error) {
+        notify(`Preferences could not be saved in this browser: ${errorMessage(error)}`, "error");
+        return false;
+      }
+    }
+    try {
+      if (mode !== "live") throw new Error("Connect to the backend before saving financial data.");
+      const response = id
+        ? await updateResource(resource, id, payload)
+        : await createResource(resource, payload);
+      if (resource === "budgets" || resource === "goals") {
+        try {
+          const refreshed = await getResource(resource);
+          setData((current) => ({
+            ...current,
+            [resource]: normalizeResource(resource, refreshed),
+          }));
+          setResourceErrors((current) => {
+            const { [`${resource}Error`]: _error, ...rest } = current;
+            return rest;
+          });
+          notify("Changes saved.");
+        } catch (refreshError) {
+          const savedItem = response?.item || response;
+          setData((current) => {
+            const existing = current[resource] || [];
+            const updated = id
+              ? existing.map((item) => item.id === id ? { ...item, ...savedItem } : item)
+              : [savedItem, ...existing];
+            return { ...current, [resource]: updated };
+          });
+          setResourceErrors((current) => ({
+            ...current,
+            [`${resource}Error`]: `Saved successfully, but the list could not be refreshed: ${errorMessage(refreshError)}`,
+          }));
+          notify("Saved successfully, but the list could not be refreshed.", "error");
+        }
+        return true;
+      }
+      setData((current) => {
+        const existing = current[resource] || [];
+        const savedItem = response?.item || response || payload;
+        const updated = id
+          ? existing.map((item) => item.id === id ? { ...item, ...savedItem } : item)
+          : [savedItem, ...existing];
+        return { ...current, [resource]: updated };
+      });
+      notify("Changes saved.");
+      return true;
+    } catch (error) {
+      notify(errorMessage(error), "error");
+      return false;
+    }
+  }, [mode, notify]);
+
+  const removeResource = useCallback(async (resource, id) => {
+    if (mode !== "live") {
+      notify("Connect to the backend before deleting financial data.", "error");
+      return false;
+    }
+    try {
+      await deleteResource(resource, id);
+      setData((current) => ({
+        ...current,
+        [resource]: (current[resource] || []).filter((item) => item.id !== id),
+      }));
+      notify("Item deleted.");
+      return true;
+    } catch (error) {
+      notify(errorMessage(error), "error");
+      return false;
+    }
+  }, [mode, notify]);
+
+  const executeModel = useCallback(async (modelName, payload = {}, label = "AI model") => {
+    if (mode !== "live") {
+      notify(`${label} did not run: connect a live backend first.`, "error");
+      return null;
+    }
+    setResourceLoading((current) => ({ ...current, [modelName]: true }));
+    try {
+      const result = await runModel(modelName, payload);
+      setData((current) => {
+        if (modelName === "forecast") {
+          return {
+            ...current,
+            forecast: result.forecast || result,
+            explainability: {
+              ...(current.explainability || {}),
+              forecast: result.explanation || result.shap || current.explainability?.forecast,
+            },
+          };
+        }
+        if (modelName === "anomalies") return { ...current, anomalies: result };
+        if (modelName === "recommendations") return { ...current, recommendations: result.items || result.recommendations || [], recommendationsPeriod: result.analysis_period };
+        if (modelName === "explainability") {
+          const model = payload.model || "forecast";
+          return {
+            ...current,
+            explainability: { ...(current.explainability || {}), [model]: result },
+          };
+        }
+        if (modelName === "insights") return { ...current, insights: result };
+        if (modelName === "categorize") {
+          const replacements = result.items || result.transactions || [];
+          return {
+            ...current,
+            transactions: (current.transactions || []).map((row) => {
+              const replacement = replacements.find((item) => item.id === row.id || item.transaction_id === row.id);
+              return replacement ? { ...row, suggested_category: replacement.category, category_confidence: replacement.confidence } : row;
+            }),
+          };
+        }
+        return current;
+      });
+      if (result.status === "unavailable") {
+        notify(`${label} unavailable: ${result.reason || "The model did not return results."}`, "error");
+      } else if (result.status === "stale") {
+        notify(`${label} is stale; no current prediction is shown.`, "error");
+      } else {
+        notify(modelName === "categorize"
+          ? "Category suggestions received; they have not been saved to your transactions."
+          : `${label} completed using the connected API.`);
+      }
+      return result;
+    } catch (error) {
+      notify(`${label} failed: ${errorMessage(error)}`, "error");
+      return null;
+    } finally {
+      setResourceLoading((current) => ({ ...current, [modelName]: false }));
+    }
+  }, [mode, notify]);
+
+  const handleDelete = async (resource, id) => {
+    if (window.confirm("Delete this item? This action cannot be undone.")) {
+      const removed = await removeResource(resource, id);
+      if (removed && resource === "transactions") {
+        await fetchTransactions(transactionQuery.current);
+      }
+    }
+  };
+
+  const handleDate = () => navigate("/transactions");
+  const handleNotifications = () => notify("Notifications are not available because no backend notifications API is configured.", "error");
+  const handleProfile = () => navigate("/settings");
+  const themeToggle = () => setTheme((value) => value === "light" ? "dark" : "light");
+  const recommendationCount = Array.isArray(currentData.recommendations) ? currentData.recommendations.length : 0;
+
+  return (
+    <div className="app-shell">
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        collapsed={sidebarCollapsed}
+        onCollapse={() => setSidebarCollapsed((value) => !value)}
+        recommendationCount={recommendationCount}
+      />
+      <div className={`app-main ${sidebarCollapsed ? "main-expanded" : ""}`}>
+        <Navbar
+          onMenu={() => setSidebarOpen(true)}
+          onSearch={setSearch}
+          onTheme={themeToggle}
+          theme={theme}
+          mode={mode}
+          onDate={handleDate}
+          onNotifications={handleNotifications}
+          onProfile={handleProfile}
+          analysisPeriod={currentData.overview?.analysis_period?.month}
+        />
+        <main className="main-content">
+          <div className="content-inner">
+            {mode === "unavailable" && <div className="inline-warning" role="alert"><CircleAlert size={16} />{currentData.connectionError}<button className="text-button" onClick={loadData}>Retry</button></div>}
+            {mode === "live" && Object.keys(resourceErrors).length > 0 && <div className="inline-warning" role="status"><CircleAlert size={16} />Some backend data is unavailable: {Object.values(resourceErrors).join(" · ")}</div>}
+            {loading ? <LoadingSkeleton rows={5} /> : (
+              <Routes>
+                <Route path="/" element={<OverviewPage data={overviewData} mode={mode} refreshing={refreshing} onRefresh={refreshLiveData} onNavigate={navigate} />} />
+                <Route path="/transactions" element={<TransactionsPage data={currentData} mode={mode} transactionMeta={transactionMeta} transactionLoading={transactionLoading} onFetchTransactions={fetchTransactions} onSave={saveResource} onDelete={handleDelete} onRunModel={executeModel} toast={notify} />} />
+                <Route path="/insights" element={<InsightsPage data={currentData} mode={mode} onRunModel={executeModel} />} />
+                <Route path="/forecasting" element={<ForecastPage data={currentData} mode={mode} onRunModel={executeModel} navigate={navigate} />} />
+                <Route path="/anomalies" element={<AnomaliesPage data={currentData} mode={mode} onRunModel={executeModel} />} />
+                <Route path="/recommendations" element={<RecommendationsPage data={currentData} mode={mode} onRunModel={executeModel} />} />
+                <Route path="/budgets" element={<BudgetsPage data={currentData} mode={mode} onSave={saveResource} onDelete={handleDelete} />} />
+                <Route path="/goals" element={<GoalsPage data={currentData} mode={mode} onSave={saveResource} onDelete={handleDelete} />} />
+                <Route path="/simulator" element={<SimulatorPage data={currentData} mode={mode} />} />
+                <Route path="/explainability" element={<ExplainabilityPage data={currentData} mode={mode} onRunModel={executeModel} />} />
+                <Route path="/settings" element={<SettingsPage data={currentData} mode={mode} theme={theme} onTheme={themeToggle} onSave={saveResource} toast={notify} />} />
+                <Route path="*" element={<EmptyState title="Page not found" description="This FinAI page doesn’t exist." action={<button className="button button-primary" onClick={() => navigate("/")}>Go to overview</button>} />} />
+              </Routes>
+            )}
+          </div>
+        </main>
+      </div>
+      {toast && <div className={`toast ${toastKind}`} role="status">{toastKind === "error" ? <CircleAlert size={17} /> : <Check size={17} />}{toast}<button onClick={() => setToast(null)} aria-label="Dismiss notification"><X size={15} /></button></div>}
+      <div className="sr-only" aria-live="polite">{titleFor(location.pathname)}</div>
+    </div>
+  );
+}

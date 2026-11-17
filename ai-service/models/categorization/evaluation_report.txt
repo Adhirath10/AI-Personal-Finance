@@ -1,0 +1,34 @@
+Transaction Categorization Evaluation Report
+================================================
+Accuracy: 0.9945
+Weighted Precision: 0.9951
+Weighted Recall: 0.9945
+Weighted F1-score: 0.9946
+Macro Precision: 0.9933
+Macro Recall: 0.9946
+Macro F1-score: 0.9936
+
+Classification Report:
+               precision    recall  f1-score   support
+
+        Bills       1.00      1.00      1.00      1186
+    Education       1.00      1.00      1.00       467
+Entertainment       0.89      1.00      0.94       433
+         Food       1.00      1.00      1.00      1214
+    Groceries       1.00      1.00      1.00       975
+   Healthcare       1.00      1.00      1.00       341
+   Investment       1.00      1.00      1.00       993
+        Other       1.00      1.00      1.00       244
+ Other Income       1.00      1.00      1.00        67
+Personal Care       1.00      1.00      1.00       311
+         Rent       1.00      1.00      1.00       338
+       Salary       1.00      1.00      1.00       360
+     Shopping       1.00      1.00      1.00       899
+ Subscription       1.00      0.91      0.95       599
+    Transport       1.00      1.00      1.00       659
+       Travel       1.00      1.00      1.00       428
+
+     accuracy                           0.99      9514
+    macro avg       0.99      0.99      0.99      9514
+ weighted avg       1.00      0.99      0.99      9514
+

@@ -1,0 +1,50 @@
+Isolation Forest Anomaly Detection Evaluation
+================================================
+Validation: chronological holdout by transaction date.
+Training rows are earlier than the test window; test rows were not used
+to fit models or preprocessing.
+Scope: expense transactions only.
+Existing is_anomaly and anomaly_type fields are excluded from training
+features and used only to describe/score the held-out results.
+
+Stored-label reliability: UNVERIFIED.
+No independent ground-truth provenance for the stored labels was found.
+The metrics below measure agreement with stored annotations only;
+they are not validated anomaly-detection performance and are not
+fraud-detection metrics.
+
+Contamination: 0.0200
+Test window starts: 2025-10-20
+Training expense rows: 36,583
+Test expense rows: 8,853
+Test rows with valid labels: 8,853
+Test rows with missing/invalid labels: 0
+Positive labels missing anomaly_type (full expense dataset): 0
+Normal labels with anomaly_type (full expense dataset): 0
+
+Accuracy: 0.9130
+Precision: 0.0309
+Recall: 0.0979
+F1-score: 0.0470
+
+Confusion Matrix (rows = stored labels; columns = predictions):
+                 Predicted Normal   Predicted Anomaly
+Stored Normal               8,064                 595
+Stored Anomaly                175                  19
+
+Classification Report:
+              precision    recall  f1-score   support
+
+      Normal       0.98      0.93      0.95      8659
+     Anomaly       0.03      0.10      0.05       194
+
+    accuracy                           0.91      8853
+   macro avg       0.50      0.51      0.50      8853
+weighted avg       0.96      0.91      0.93      8853
+
+Confusion matrix image: D:\AI-POWERED PERSONAL FINANCE\ai-service\models\anomaly_detection\confusion_matrix.png
+
+Isolation Forest identifies statistical outliers under the selected
+features and contamination threshold. It does not determine whether
+a transaction is fraudulent. Fraud detection requires validated fraud
+labels and a separate supervised evaluation.

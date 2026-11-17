@@ -1,0 +1,45 @@
+Behavioral Feature Isolation Forest Experiment
+================================================
+Stored anomaly-label provenance: UNVERIFIED.
+Metrics measure agreement with stored annotations only; they are not
+validated anomaly-detection or fraud-detection performance.
+
+Validation: latest 20% of unique transaction dates held out.
+Training rows: 36,583
+Test rows: 8,853
+Test window starts: 2025-10-20
+Contamination: 0.0200
+Stored labels and anomaly types are excluded from all model inputs.
+Features are computed from strictly earlier transactions for each user.
+Transactions with the same user and timestamp share the same prior state.
+Test-period features may use earlier transaction attributes from the
+training and test periods, as in chronological online scoring; no
+future transaction attributes or labels are used.
+Numeric imputation/scaling and categorical encoding are fit on training
+features only. Users without a personal model use type/pooled fallback.
+
+Baseline model:
+  Precision: 0.0309
+  Recall: 0.0979
+  F1-score: 0.0470
+  Alert rate: 6.9355%
+  Confusion matrix (rows=stored [normal, anomaly], columns=predicted [normal, anomaly]):
+    [[8064, 595], [175, 19]]
+
+Behavioral feature model:
+  Precision: 0.0603
+  Recall: 0.2165
+  F1-score: 0.0944
+  Alert rate: 7.8617%
+  Confusion matrix (rows=stored [normal, anomaly], columns=predicted [normal, anomaly]):
+    [[8005, 654], [152, 42]]
+
+Behavioral features include prior user/category amount mean and sample
+standard deviation, prior counts/frequencies, amount deviation and
+z-score from user history, merchant prior count/familiarity, and counts
+in the preceding 30 days. Early-history statistics are missing and
+handled by training-fitted median imputation; count/familiarity features
+indicate available history.
+
+Experimental model artifact: D:\AI-POWERED PERSONAL FINANCE\ai-service\models\anomaly_detection_behavioral_experiment\behavioral_isolation_forest_models.joblib
+Experimental metadata: D:\AI-POWERED PERSONAL FINANCE\ai-service\models\anomaly_detection_behavioral_experiment\model_metadata.json
