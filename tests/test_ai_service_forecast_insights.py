@@ -155,6 +155,29 @@ def test_insights_use_latest_recorded_months_across_a_gap(tmp_path, monkeypatch)
     assert food["supporting_values"]["historical_months_compared"] == 3
 
 
+def test_latest_month_with_only_income_uses_latest_expense_month(tmp_path, monkeypatch):
+    database = tmp_path / "income-only.db"
+    # Salary credited in a new month before any expense is recorded for it.
+    _create_database(
+        database,
+        extra_rows=[("2026-01-01", "Salary", "Employer", 60000.0, "Income", "Salary")],
+    )
+    monkeypatch.setattr(api, "DATABASE_PATH", database)
+    client = TestClient(api.app)
+
+    insights = client.get("/api/insights", params={"user_id": "U1"}).json()
+    forecast = client.get("/api/forecast", params={"user_id": "U1"}).json()
+
+    assert insights["status"] == "available"
+    assert insights["analysis_period"]["selected_month"] == "2025-12"
+    assert insights["analysis_period"]["latest_transaction_month"] == "2026-01"
+    assert "2026-01 contain no expenses" in insights["notice"]
+    assert insights["items"]
+    assert forecast["status"] == "available"
+    assert forecast["forecast_month"] == "2026-01"
+    assert forecast["predicted_expense"] > 0
+
+
 def test_insights_do_not_depend_on_other_models(service, monkeypatch):
     original = api._recommendation_engine
 

@@ -147,7 +147,7 @@ def _forecast_payload(analysis: dict[str, Any]) -> dict[str, Any]:
         result["history_end_month"] = history_end
         result["skip_reason"] = None
         result["notice"] = (
-            f"Recorded history ends in {history_end}, so this is the model's "
+            f"Recorded expenses end in {history_end}, so this is the model's "
             f"forecast for {result.get('forecast_month')}, a month that has "
             "already passed. Add recent transactions to forecast an upcoming month."
             if is_historical
@@ -362,10 +362,18 @@ def insights(user_id: str = Query(min_length=1, max_length=100)) -> dict[str, An
             ),
             reverse=True,
         )
+        period = analysis["analysis_period"]
         result = {
             "status": "available" if items else "no_insights",
-            "analysis_period": analysis["analysis_period"],
+            "analysis_period": period,
             "items": items,
+            "notice": (
+                f"Showing {period['selected_month']}, the latest month with recorded "
+                f"expenses. Transactions in {period['latest_transaction_month']} "
+                "contain no expenses yet."
+                if period["selected_month"] != period["latest_transaction_month"]
+                else None
+            ),
         }
         if not items:
             result["reason"] = (

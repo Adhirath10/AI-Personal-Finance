@@ -717,8 +717,26 @@ class RecommendationEngine:
         available_periods = set(transactions["month"].dropna())
         if not summaries.empty:
             available_periods.update(summaries.index)
+        expense_months = transactions.loc[
+            transactions["transaction_type"]
+            .astype(str)
+            .str.strip()
+            .str.casefold()
+            .eq("expense"),
+            "month",
+        ]
+        latest_expense_month = (
+            expense_months.max() if not expense_months.empty else None
+        )
         if selected_period is None:
-            selected_period = latest_transaction_month
+            # Default to the latest month with recorded expenses. A newer month
+            # that only holds income (e.g. a salary credited on the 1st) has no
+            # spending to analyse, compare or forecast from.
+            selected_period = (
+                latest_expense_month
+                if latest_expense_month is not None
+                else latest_transaction_month
+            )
         if selected_period not in available_periods:
             raise ValueError(
                 f"No transaction or monthly summary data is available for "
@@ -929,6 +947,11 @@ class RecommendationEngine:
             "analysis_period": {
                 "selected_month": latest_key,
                 "latest_transaction_month": str(latest_transaction_month),
+                "latest_expense_month": (
+                    str(latest_expense_month)
+                    if latest_expense_month is not None
+                    else None
+                ),
                 "latest_available_month": str(max(available_periods)),
                 "is_current_month": selected_period
                 == pd.Period(self.today, freq="M"),
