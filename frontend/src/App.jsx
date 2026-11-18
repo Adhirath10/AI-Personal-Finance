@@ -458,7 +458,7 @@ export default function App() {
             ...current,
             transactions: (current.transactions || []).map((row) => {
               const replacement = replacements.find((item) => item.id === row.id || item.transaction_id === row.id);
-              return replacement ? { ...row, suggested_category: replacement.category, category_confidence: replacement.confidence } : row;
+              return replacement ? { ...row, suggested_category: replacement.category, category_confidence: replacement.confidence, category_needs_review: Boolean(replacement.needs_review) } : row;
             }),
           };
         }

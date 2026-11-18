@@ -41,11 +41,56 @@ def load_categorization_artifacts(
 
     vectorizer = joblib.load(vectorizer_path)
     classifier = joblib.load(classifier_path)
-    if getattr(classifier, "n_features_in_", None) != len(
-        getattr(vectorizer, "vocabulary_", {})
-    ):
+    if getattr(classifier, "n_features_in_", None) != _feature_count(vectorizer):
         raise ValueError("Categorization vectorizer and classifier do not match.")
     return vectorizer, classifier
+
+
+def _feature_count(vectorizer: Any) -> int:
+    """Number of model inputs for a plain TF-IDF or a words + characters union."""
+    try:
+        return len(vectorizer.get_feature_names_out())
+    except (AttributeError, ValueError):
+        return len(getattr(vectorizer, "vocabulary_", {}))
+
+
+ABSENT_TERMS = "__absent__"
+
+
+def group_term_contributions(text: str, names, input_values, contributions):
+    """Turn per-feature SHAP values into per-word contributions.
+
+    The improved model sees whole words ("word__swiggy") and character pieces
+    of words ("char__swig"). Pieces present in the text are added to the word
+    they come from, so the explanation reads in whole words and still adds up.
+    Features that are absent from this text (they only move the score through
+    the model's starting point) are combined into one ABSENT_TERMS row.
+    Older word-only vectorizers have no prefixes and are reported per term.
+    """
+    words = text.split()
+    totals: dict[str, float] = {}
+    tfidf: dict[str, float] = {}
+    for name, value, contribution in zip(names, input_values, contributions):
+        contribution = float(contribution)
+        if contribution == 0:
+            continue
+        name = str(name)
+        if value == 0:
+            totals[ABSENT_TERMS] = totals.get(ABSENT_TERMS, 0.0) + contribution
+            continue
+        if name.startswith("char__"):
+            piece = name[len("char__"):].strip()
+            owners = [word for word in dict.fromkeys(words) if piece and piece in word] or [ABSENT_TERMS]
+            for owner in owners:
+                totals[owner] = totals.get(owner, 0.0) + contribution / len(owners)
+            continue
+        term = name[len("word__"):] if name.startswith("word__") else name
+        totals[term] = totals.get(term, 0.0) + contribution
+        tfidf[term] = float(value)
+    return [
+        {"term": term, "tfidf_value": tfidf.get(term), "shap_value": json_number(total)}
+        for term, total in sorted(totals.items(), key=lambda item: abs(item[1]), reverse=True)
+    ]
 
 
 def _reference_data(database_path: str | Path | None, background_size: int):
@@ -79,7 +124,7 @@ def _validate_reconstructed_training(
             "Current database categories do not match the saved classifier classes; "
             "a leak-safe training background cannot be reconstructed."
         )
-    if len(vectorizer.vocabulary_) != classifier.n_features_in_:
+    if _feature_count(vectorizer) != classifier.n_features_in_:
         raise ValueError("Saved TF-IDF vocabulary differs from classifier inputs.")
 
 
@@ -145,7 +190,8 @@ def explain_category(
     confidence = float(probabilities[classes.index(predicted_label)])
 
     term_names = list(vectorizer.get_feature_names_out())
-    order = np.argsort(np.abs(contributions))[::-1][:max_display]
+    input_values = vectorizer.transform([text]).toarray()[0]
+    grouped_terms = group_term_contributions(text, term_names, input_values, contributions)[:max_display]
     target_dir = output_directory(output_dir)
     text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
     stem = target_dir / (f"category_{safe_filename(selected_label)}_{text_digest}")
@@ -170,15 +216,7 @@ def explain_category(
                 "stratified split procedure and seed; the model artifact does "
                 "not contain a source-data fingerprint"
             ),
-            "top_term_contributions": [
-                {
-                    "term": term_names[index],
-                    "tfidf_value": float(vectorizer.transform([text])[0, index]),
-                    "shap_value": json_number(contributions[index]),
-                }
-                for index in order
-                if contributions[index] != 0
-            ],
+            "top_term_contributions": grouped_terms,
             "visualizations": [str(waterfall_path)],
             "explanation": (
                 "Contributions explain this class's decision score, not a change "

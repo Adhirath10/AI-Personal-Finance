@@ -286,6 +286,89 @@ MIN_CATEGORY_HISTORY = 5
 MIN_MERCHANT_HISTORY = 20
 
 
+def _monthly_impact(recommendation: dict[str, Any]) -> float | None:
+    """Rupees a recommendation is about for one month, used to rank it.
+
+    Overspending: the shortfall; budget: the amount over budget; spending increase: the increase; goal: the
+    monthly contribution needed; surplus: the amount left over; forecast: the
+    amount above the reference; unusual transactions: their total.
+    """
+    values = recommendation.get("supporting_values", {})
+    kind = recommendation.get("recommendation_type")
+
+    def first(*names):
+        for name in names:
+            number = _number(values.get(name))
+            if number is not None:
+                return number
+        return None
+
+    if kind == "overspending":
+        amount = first("deficit")
+    elif kind == "budget_warning":
+        # Only an exceeded budget has money at stake; a warning has none yet.
+        amount = first("over_budget_amount")
+    elif kind == "expense_reduction":
+        amount = first("increase_amount")
+        if amount is None:
+            latest, usual = first("latest_discretionary_expense"), first("historical_average_discretionary_expense")
+            amount = latest - usual if latest is not None and usual is not None else None
+    elif kind == "goal_progress":
+        amount = first("required_monthly_contribution", "remaining_amount")
+    elif kind == "saving_opportunity":
+        amount = first("latest_monthly_surplus", "monthly_surplus")
+    elif kind == "future_expense_warning":
+        predicted, income = first("predicted_expense"), first("monthly_income_reference")
+        average = first("recent_average_expense")
+        if predicted is None:
+            amount = None
+        elif income is not None and predicted > income:
+            amount = predicted - income  # the expected shortfall
+        elif average is not None and predicted > average:
+            amount = predicted - average  # the expected rise over recent months
+        else:
+            amount = None
+    else:
+        amount = sum(
+            _number(item.get("amount")) or 0
+            for item in values.get("transactions", [])
+            if isinstance(item, dict)
+        ) or None
+    return abs(round(float(amount), 2)) if amount else None
+
+
+MIN_THRESHOLD_HISTORY = 30  # earlier expenses needed for a personal score threshold
+
+
+def _model_for(artifacts: dict, user_id: Any, transaction_type: Any):
+    return artifacts["user_models"].get(
+        (str(user_id), str(transaction_type)),
+        artifacts["type_models"].get(str(transaction_type), artifacts["pooled_model"]),
+    )
+
+
+def _personal_score_thresholds(artifacts, features, rows, kinds, candidate_index, contamination):
+    """Each user's own anomaly-score level that only ``contamination`` of their
+    earlier expenses reached.
+
+    The Isolation Forest threshold is shared by many spending styles, so on its
+    own it flags far more than ``contamination`` of some users' purchases. A
+    model-only flag is shown when the score is unusual for this user too.
+    """
+    earliest = rows.loc[candidate_index, "transaction_date"].min()
+    history = rows.loc[
+        kinds.eq("expense") & rows["transaction_date"].lt(earliest) & ~rows.index.isin(candidate_index)
+    ]
+    thresholds = {}
+    for (user_id, transaction_type), indexes in history.groupby(["user_id", "transaction_type"], sort=False).groups.items():
+        if len(indexes) < MIN_THRESHOLD_HISTORY:
+            continue
+        model = _model_for(artifacts, user_id, transaction_type)
+        scores = -model.decision_function(features.loc[indexes])
+        thresholds[(str(user_id), str(transaction_type))] = float(np.quantile(scores, 1 - contamination))
+    return thresholds
+
+
 def _assess_expense(
     row: pd.Series,
     index: Any,
@@ -293,8 +376,14 @@ def _assess_expense(
     typical_income: float | None,
     model_flag: bool,
     score: float,
+    model_threshold: float | None = None,
 ) -> dict[str, Any] | None:
-    """Return severity and plain-language reasons for an unusual expense, or None."""
+    """Return severity and plain-language reasons for an unusual expense, or None.
+
+    ``model_threshold`` is the user's own score level for a model-only flag
+    (see ``_personal_score_thresholds``): when none of the history checks
+    agree, the model's flag is kept only if the score reaches it.
+    """
     amount = float(row["amount"])
     when = row["transaction_date"]
     category = _clean_category(row["category"]) or "this category"
@@ -349,6 +438,10 @@ def _assess_expense(
         points += 1
         signals.append("new_merchant")
         reasons.append(f"First payment to {merchant}.")
+
+    if model_flag and not signals and model_threshold is not None and score < model_threshold:
+        # Common for this user: the model's flag alone is not worth an alert.
+        model_flag = False
 
     if model_flag:
         # The model alone only marks a pattern for review (Low); it raises the
@@ -787,25 +880,25 @@ class RecommendationEngine:
         for (user_id, transaction_type), indexes in candidates.groupby(
             ["user_id", "transaction_type"], sort=False
         ).groups.items():
-            model = artifacts["user_models"].get(
-                (str(user_id), str(transaction_type)),
-                artifacts["type_models"].get(
-                    str(transaction_type), artifacts["pooled_model"]
-                ),
-            )
+            model = _model_for(artifacts, user_id, transaction_type)
             selected = candidate_features.loc[indexes]
             flags = model.predict(selected) == -1
             scores = -model.decision_function(selected)
             for position, index in enumerate(indexes):
                 model_results[index] = (bool(flags[position]), float(scores[position]))
 
+        thresholds = _personal_score_thresholds(
+            artifacts, features, rows, kinds, candidates.index,
+            float(metadata.get("contamination", 0.02) or 0.02),
+        )
         typical_income = _typical_monthly_income(rows, kinds, analysis_period)
         expense_rows = rows.loc[kinds.eq("expense")].sort_values("transaction_date", kind="stable")
         predictions: list[dict[str, Any]] = []
         severity_counts = {"High": 0, "Medium": 0, "Low": 0}
         for index, row in candidates.iterrows():
             model_flag, score = model_results[index]
-            assessment = _assess_expense(row, index, expense_rows, typical_income, model_flag, score)
+            threshold = thresholds.get((str(row["user_id"]), str(row["transaction_type"])))
+            assessment = _assess_expense(row, index, expense_rows, typical_income, model_flag, score, threshold)
             if assessment is None:
                 continue
             severity_counts[assessment["severity"]] += 1
@@ -831,6 +924,11 @@ class RecommendationEngine:
             **scope,
             "analyzed_count": int(out_of_sample.sum()),
             "model_flag_count": int(sum(flag for flag, _ in model_results.values())),
+            # Raw Isolation Forest flags, before the history checks and personal
+            # thresholds (used to evaluate the model on its own).
+            "model_flagged_ids": [
+                str(rows.at[index, "transaction_id"]) for index, (flag, _) in model_results.items() if flag
+            ],
             "severity_counts": severity_counts,
             "typical_monthly_income": typical_income,
             "transactions": predictions,
@@ -1577,7 +1675,7 @@ class RecommendationEngine:
                             user_id,
                             f"Plan contributions toward {goal_type}",
                             f"The recorded surplus for {month} could cover the "
-                            f"calculated monthly contribution of {required_monthly:.2f} "
+                            f"calculated monthly contribution of {_inr(required_monthly)} "
                             "needed to reach this goal by its stored target date.",
                             "goal_progress",
                             "Medium",
@@ -1617,9 +1715,9 @@ class RecommendationEngine:
                     self._recommendation(
                         user_id,
                         f"Review contribution plan for {goal_type}",
-                        f"The remaining goal amount is {remaining:.2f}; reaching it by "
+                        f"The remaining goal amount is {_inr(remaining)}; reaching it by "
                         f"{goal_values['target_date']} would require about "
-                        f"{required_monthly:.2f} per month. {affordability_note}",
+                        f"{_inr(required_monthly)} per month. {affordability_note}",
                         "goal_progress",
                         "High"
                         if str(goal.get("priority") or "").casefold() == "high"
@@ -1781,10 +1879,18 @@ class RecommendationEngine:
                 )
 
         recommendations = self._deduplicate_recommendations(recommendations)
+        for item in recommendations:
+            impact = _monthly_impact(item)
+            item["impact_amount"] = impact
+            if impact is not None:
+                item["supporting_values"]["money_involved"] = impact
+        # Most urgent first; within the same priority, the one involving the
+        # most money comes first.
         return sorted(
             recommendations,
             key=lambda item: (
                 {"High": 0, "Medium": 1, "Low": 2}.get(item["priority"], 3),
+                -(item["impact_amount"] or 0),
                 item["recommendation_type"],
                 item["recommendation_title"],
             ),

@@ -39,6 +39,7 @@ const FIELD_LABELS = {
   flagged_transaction_count: "Transactions to review",
   high_severity_count: "High severity",
   medium_severity_count: "Medium severity",
+  money_involved: "Money involved (this month)",
 };
 
 // Internal bookkeeping that means nothing to a reader.

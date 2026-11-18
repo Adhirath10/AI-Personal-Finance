@@ -281,13 +281,23 @@ def categorize(body: CategorizeBody) -> dict[str, Any]:
             text = training.prepare_text_feature(description, merchant)
             features = vectorizer.transform([text])
             probabilities = classifier.predict_proba(features)[0]
+            ranked = probabilities.argsort()[::-1]
+            confidence = float(probabilities[ranked[0]])
+            threshold = float(getattr(training, "LOW_CONFIDENCE", 0.3))
             results.append(
                 {
                     "id": item.get("id"),
                     "description": description,
                     "merchant": merchant,
-                    "category": str(classifier.predict(features)[0]),
-                    "confidence": float(probabilities.max()),
+                    "category": str(classifier.classes_[ranked[0]]),
+                    "confidence": confidence,
+                    # A weak guess (e.g. a merchant the model has never seen)
+                    # is shown as a suggestion for the user to confirm.
+                    "needs_review": confidence < threshold,
+                    "alternatives": [
+                        {"category": str(classifier.classes_[index]), "confidence": float(probabilities[index])}
+                        for index in ranked[1:3]
+                    ],
                 }
             )
         return {"status": "available", "items": results}

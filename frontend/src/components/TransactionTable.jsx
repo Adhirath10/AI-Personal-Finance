@@ -17,7 +17,7 @@ export default function TransactionTable({ rows = [], onEdit, onDelete, compact 
               <tr key={row.id}>
                 <td><div className="transaction-cell" title={`Transaction ID ${row.id}`}><span className={`merchant-logo ${income ? "income" : ""}`}>{initials(row.merchant)}</span><span><strong>{row.description}</strong><small>{row.merchant}</small></span></div></td>
                 <td className="muted-cell">{shortDate(row.date)}</td>
-                <td><span className="category-chip">{row.category}</span>{row.suggested_category && <small className="category-suggestion">Model suggestion: {row.suggested_category} ({Math.round(row.category_confidence * 100)}%)</small>}</td>
+                <td><span className="category-chip">{row.category}</span>{row.suggested_category && <small className="category-suggestion">Model suggestion: {row.suggested_category} ({Math.round(row.category_confidence * 100)}%){row.category_needs_review ? " · please check" : ""}</small>}</td>
                 <td><span className={`type-label ${income ? "income" : "expense"}`}>{income ? <ArrowDownLeft size={13} /> : <ArrowUpRight size={13} />}{row.type}</span></td>
                 <td className={`amount-cell align-right ${income ? "income-text" : ""}`}>{income ? "+" : "−"}{currency(row.amount)}</td>
                 <td className="table-action">

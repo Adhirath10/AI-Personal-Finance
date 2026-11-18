@@ -777,3 +777,9 @@ button.help-grid-item:hover { border-color: color-mix(in srgb, var(--blue) 35%, 
   body { background: white; }
   .panel, .summary-card { break-inside: avoid; box-shadow: none; }
 }
+
+/* Category field with an AI suggestion button (Add transaction) */
+.category-field { display: flex; gap: 8px; align-items: center; }
+.category-field select { flex: 1; min-width: 0; }
+.category-field .text-button { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.field-hint { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; color: var(--muted, #64748b); line-height: 1.4; }

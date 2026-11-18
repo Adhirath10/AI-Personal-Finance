@@ -147,7 +147,7 @@ def prepare_features(data: pd.DataFrame) -> pd.DataFrame:
     features["is_recurring"] = pd.to_numeric(data["is_recurring"], errors="coerce")
 
     dates = pd.to_datetime(data["transaction_date"], errors="coerce")
-    day_angle = 2 * np.pi * dates.dt.dayofweek / 7
+    day_angle = 2 * np.pi * dates.dt.day_of_week / 7
     month_angle = 2 * np.pi * (dates.dt.month - 1) / 12
     features["day_of_week_sin"] = np.sin(day_angle)
     features["day_of_week_cos"] = np.cos(day_angle)

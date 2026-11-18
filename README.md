@@ -136,6 +136,35 @@ It prints the comparison with the moving-average baselines and the previous
 model, and writes `forecast_metadata.json` and `evaluation_report.txt` next to
 the model. Restart the AI service afterwards.
 
+### Retrain the transaction categorizer
+
+The categorizer reads whole words and character pieces of words, so spelling
+mistakes ("swigy", "zomto") and everyday merchants missing from the dataset
+("Dominos", "Jio recharge", "Zerodha") still get a sensible category. Retrain it
+once on your database:
+
+```bash
+python ai-service/categorization/train.py
+```
+
+The report (`ai-service/models/categorization/evaluation_report.txt`) compares
+the previous word-only model with the new one on the normal test set, on the
+same test set with spelling mistakes, and on merchants held out of training.
+Guesses below 30% confidence are marked "please check" in the app. In
+**Add transaction**, **Suggest** fills in the category from the model.
+
+### Measure the anomaly detector as the app uses it
+
+The app combines the Isolation Forest with checks against your own history
+(large for the category, duplicate charge, share of income, new merchant), and
+shows a model-only flag only when the score is unusual for that user too. To
+compare the model alone, the checks alone and the combination against the
+stored labels:
+
+```bash
+python ai-service/anomaly_detection/evaluate_hybrid.py
+```
+
 ### Recent data for a demo
 
 The dataset ends in 2025, so forecasts would be for months that have already

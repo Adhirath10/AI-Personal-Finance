@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { errorMessage, exportTransactionsCsv } from "../services/api";
+import { errorMessage, exportTransactionsCsv, runModel } from "../services/api";
 import { clearSettings, resizeImage } from "../utils/profile";
 import { FORECAST_MONEY_FEATURES, featureLabel, fieldLabel, visibleFields } from "../utils/labels";
 import {
@@ -230,7 +230,7 @@ function formatRecommendationSupportValue(name, value) {
     return parts.join(" • ") || label;
   }
 
-  if (/(amount|budget|actual|target|current|remaining|required|deficit|expense|income|cost|spent)/i.test(name) && hasMeaningfulNumber(value)) {
+  if (/(amount|money|budget|actual|target|current|remaining|required|deficit|expense|income|cost|spent)/i.test(name) && hasMeaningfulNumber(value)) {
     return currency(value);
   }
 
@@ -267,6 +267,32 @@ export function TransactionsPage({
   const [endDate, setEndDate] = useState("");
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState(() => (location.state?.addTransaction ? {} : null));
+  const [suggestion, setSuggestion] = useState(null);
+  const formRef = useRef(null);
+  // Ask the categorization model for the category of the transaction being typed.
+  const suggestCategory = async () => {
+    const form = formRef.current;
+    const description = form?.elements.description.value.trim();
+    const merchant = form?.elements.merchant.value.trim();
+    if (!description && !merchant) {
+      setSuggestion({ error: "Type a description or merchant first." });
+      return;
+    }
+    setSuggestion({ loading: true });
+    try {
+      const result = await runModel("categorize", { items: [{ description, merchant }] });
+      const item = result.items?.[0];
+      if (result.status !== "available" || !item) {
+        setSuggestion({ error: result.reason || "The categorization model is unavailable." });
+        return;
+      }
+      if (categories.includes(item.category)) form.elements.category.value = item.category;
+      setSuggestion(item);
+    } catch (error) {
+      setSuggestion({ error: errorMessage(error) });
+    }
+  };
+  const closeEditor = () => { setEditing(null); setSuggestion(null); };
   const pageSize = 7;
   // Apply a search or "add" request sent from another page, then clear it so a
   // browser refresh does not repeat it.
@@ -316,7 +342,7 @@ export function TransactionsPage({
     const payload = { description: form.get("description"), merchant: form.get("merchant"), date: form.get("date"), category: form.get("category"), amount, balance_after_transaction: Math.round(balance * 100) / 100, type: form.get("type") };
     const result = await onSave("transactions", payload, editing?.id);
     if (result) {
-      setEditing(null);
+      closeEditor();
       onFetchTransactions({
         limit: pageSize,
         offset: (page - 1) * pageSize,
@@ -347,7 +373,7 @@ export function TransactionsPage({
         {transactionLoading ? <div className="empty-table">Loading transactions…</div> : rows.length ? <TransactionTable rows={rows} onEdit={setEditing} onDelete={onDelete ? (row) => onDelete("transactions", row.id) : undefined} /> : <EmptyState title="No matching transactions" description={data.transactionsError || "Try adjusting your search or filters."} />}
         <div className="table-footer"><span>Showing {total ? (page - 1) * pageSize + 1 : 0}–{Math.min((page - 1) * pageSize + rows.length, total)} of {total} transactions</span><div className="pagination"><button disabled={page <= 1 || transactionLoading} onClick={() => setPage((current) => current - 1)}>Previous</button><span>{page} / {totalPages}</span><button disabled={page >= totalPages || transactionLoading} onClick={() => setPage((current) => current + 1)}>Next</button></div></div>
       </section>
-      {editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><form className="modal-card" onSubmit={submit}><header><div><h2>{editing.id ? "Edit transaction" : "Add transaction"}</h2><p>Keep your financial activity up to date.</p></div><button type="button" className="icon-btn" onClick={() => setEditing(null)}>×</button></header><div className="form-grid"><label>Description<input name="description" required defaultValue={editing.description || ""} /></label><label>Merchant<input name="merchant" required defaultValue={editing.merchant || ""} /></label><label>Amount (₹)<input name="amount" type="number" min="0.01" step="0.01" required defaultValue={editing.amount || ""} /></label><label>Balance after transaction (₹)<input name="balance_after_transaction" type="number" step="0.01" placeholder={Number.isFinite(latestBalance) ? `Auto from latest balance ${currency(latestBalance)}` : "Optional"} defaultValue={editing.balance_after_transaction ?? ""} /></label><label>Date<input name="date" type="date" required defaultValue={editing.date || new Date().toISOString().slice(0, 10)} /></label><label>Category<select name="category" defaultValue={editing.category || categories[0] || "Other"}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label>Type<select name="type" defaultValue={editing.type || "Expense"}><option>Expense</option><option>Income</option></select></label></div><footer><Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button><Button type="submit">{editing.id ? "Save changes" : "Add transaction"}</Button></footer></form></div>}
+      {editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeEditor()}><form ref={formRef} className="modal-card" onSubmit={submit}><header><div><h2>{editing.id ? "Edit transaction" : "Add transaction"}</h2><p>Keep your financial activity up to date.</p></div><button type="button" className="icon-btn" onClick={closeEditor}>×</button></header><div className="form-grid"><label>Description<input name="description" required defaultValue={editing.description || ""} /></label><label>Merchant<input name="merchant" required defaultValue={editing.merchant || ""} /></label><label>Amount (₹)<input name="amount" type="number" min="0.01" step="0.01" required defaultValue={editing.amount || ""} /></label><label>Balance after transaction (₹)<input name="balance_after_transaction" type="number" step="0.01" placeholder={Number.isFinite(latestBalance) ? `Auto from latest balance ${currency(latestBalance)}` : "Optional"} defaultValue={editing.balance_after_transaction ?? ""} /></label><label>Date<input name="date" type="date" required defaultValue={editing.date || new Date().toISOString().slice(0, 10)} /></label><label>Category<div className="category-field"><select name="category" defaultValue={editing.category || categories[0] || "Other"} onChange={() => setSuggestion(null)}>{categories.map((item) => <option key={item}>{item}</option>)}</select><button type="button" className="text-button" disabled={mode !== "live" || suggestion?.loading} onClick={suggestCategory}><Sparkles size={14} />{suggestion?.loading ? "Thinking…" : "Suggest"}</button></div>{suggestion?.error && <small className="field-hint expense-text">{suggestion.error}</small>}{suggestion?.category && <small className="field-hint">AI picked <strong>{suggestion.category}</strong> ({Math.round(suggestion.confidence * 100)}% sure){suggestion.needs_review ? " — not sure, please check" : ""}{suggestion.alternatives?.length ? `. Other options: ${suggestion.alternatives.map((option) => option.category).join(", ")}` : ""}.</small>}</label><label>Type<select name="type" defaultValue={editing.type || "Expense"}><option>Expense</option><option>Income</option></select></label></div><footer><Button variant="outline" onClick={closeEditor}>Cancel</Button><Button type="submit">{editing.id ? "Save changes" : "Add transaction"}</Button></footer></form></div>}
     </div>
   );
 }
@@ -631,12 +657,17 @@ const EXPLAIN_MODELS = {
   },
 };
 
+// The categorization explainer combines every word missing from the text into one row.
+const ABSENT_TERMS = "__absent__";
+
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function explanationRows(model, rows) {
   const merged = new Map();
   for (const row of rows) {
-    const label = model === "categorization" ? `“${row.feature}”` : featureLabel(row.feature);
+    const label = model === "categorization"
+      ? (row.feature === ABSENT_TERMS ? "Words not in this transaction" : `“${row.feature}”`)
+      : featureLabel(row.feature);
     const existing = merged.get(label);
     if (existing) existing.shap_value += Number(row.shap_value) || 0;
     else merged.set(label, { ...row, label, shap_value: Number(row.shap_value) || 0 });
@@ -668,6 +699,7 @@ function factorValue(model, row) {
 function summarySentence(model, row, result) {
   const amount = effectText(model, row.shap_value).slice(1);
   if (model === "forecast") return `${row.label} ${row.shap_value >= 0 ? "raised" : "lowered"} the forecast by ${amount}.`;
+  if (model === "categorization" && row.feature === ABSENT_TERMS) return `Words that usually signal other categories are missing, which ${row.shap_value >= 0 ? "pointed towards" : "pointed away from"} ${result.prediction_label}.`;
   if (model === "categorization") return `The word ${row.label} ${row.shap_value >= 0 ? "pointed towards" : "pointed away from"} ${result.prediction_label}.`;
   return `${row.label} made it look ${row.shap_value >= 0 ? "more" : "less"} unusual.`;
 }
