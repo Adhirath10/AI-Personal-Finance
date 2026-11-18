@@ -94,3 +94,12 @@ def test_recommendations_rank_by_money_involved():
     assert _monthly_impact({"recommendation_type": "future_expense_warning", "supporting_values": {"predicted_expense": 70000.0, "monthly_income_reference": 65000.0, "recent_average_expense": 60000.0}}) == 5000.0
     assert _monthly_impact({"recommendation_type": "anomaly_review", "supporting_values": {"transactions": [{"amount": 1200.0}, {"amount": 800.0}]}}) == 2000.0
     assert _monthly_impact({"recommendation_type": "saving_opportunity", "supporting_values": {}}) is None
+
+
+def test_regular_large_payment_like_rent_is_not_flagged_for_share_of_income():
+    rent = [{"transaction_date": f"2026-0{month}-01", "merchant": "Landlord", "category": "Rent", "amount": 20000.0} for month in range(3, 9)]
+    frame_rows = rent + [{"transaction_date": "2026-10-05", "merchant": "Landlord", "category": "Rent", "amount": 20000.0}]
+    assert _assess(frame_rows, income=60000.0) is None
+    # Twice the usual rent is unusual: the share of income is mentioned.
+    doubled = rent + [{"transaction_date": "2026-10-05", "merchant": "Landlord", "category": "Rent", "amount": 40000.0}]
+    assert "large_share_of_income" in _assess(doubled, income=60000.0)["signals"]

@@ -36,7 +36,7 @@ def resolve_database_path(database_path: str | None = None) -> Path:
     return resolved
 
 
-def build_monthly_expense_data(database_path: str | Path | None = None) -> pd.DataFrame:
+def build_monthly_expense_data(database_path: str | Path | None = None, include_counts: bool = False) -> pd.DataFrame:
     """Aggregate monthly expenses per user from real transaction data while excluding income records."""
     resolved_db_path = resolve_database_path(str(database_path) if database_path is not None else None)
     connection = sqlite3.connect(f"file:{resolved_db_path.as_posix()}?mode=ro", uri=True)
@@ -68,13 +68,42 @@ def build_monthly_expense_data(database_path: str | Path | None = None) -> pd.Da
     df["month"] = df["transaction_date"].dt.to_period("M").astype(str)
 
     monthly = (
-        df.groupby(["user_id", "month"], as_index=False)["amount"]
-        .sum()
-        .rename(columns={"amount": "total_expense"})
+        df.groupby(["user_id", "month"], as_index=False)
+        .agg(total_expense=("amount", "sum"), transaction_count=("amount", "size"))
         .sort_values(["user_id", "month"])
         .reset_index(drop=True)
     )
+    if include_counts:
+        return monthly[["user_id", "month", "total_expense", "transaction_count"]]
     return monthly[["user_id", "month", "total_expense"]]
+
+
+# A month with fewer than this share of the user's usual number of expenses is
+# treated as incomplete (a month still in progress, a single test entry, or the
+# partial first month of the data) when it is at the start or end of the history.
+INCOMPLETE_MONTH_SHARE = 0.4
+
+
+def drop_incomplete_edge_months(monthly: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Remove incomplete months at the start and end of each user's history.
+
+    Months in the middle are kept: a quiet month there is real spending. Returns
+    the cleaned monthly totals and the months that were left out.
+    """
+    kept, dropped = [], []
+    for _, rows in monthly.sort_values(["user_id", "month"]).groupby("user_id", sort=False):
+        usual = rows["transaction_count"].median()
+        complete = (rows["transaction_count"] >= INCOMPLETE_MONTH_SHARE * usual).to_numpy()
+        if not complete.any():
+            dropped.append(rows)
+            continue
+        first, last = complete.argmax(), len(complete) - 1 - complete[::-1].argmax()
+        kept.append(rows.iloc[first:last + 1])
+        dropped.extend([rows.iloc[:first], rows.iloc[last + 1:]])
+    columns = monthly.columns
+    cleaned = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=columns)
+    left_out = pd.concat(dropped, ignore_index=True) if dropped else pd.DataFrame(columns=columns)
+    return cleaned, left_out
 
 
 LEGACY_FEATURE_COLUMNS = [
@@ -198,28 +227,40 @@ def load_forecast_metadata(model_dir: str | Path | None) -> dict | None:
 
 
 def evaluate_forecast(y_true, y_pred) -> dict:
-    """Return MAE, RMSE, and MAPE with a safe zero-handling rule."""
+    """Return MAE, RMSE, MAPE and the median percentage error.
+
+    The median shows the typical miss; MAPE is an average that a single very
+    small month can blow up, so both are reported.
+    """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     denom = np.where(np.abs(y_true) < 1e-9, 1.0, y_true)
-    mape = np.mean(np.abs((y_true - y_pred) / denom)) * 100.0
-    return {"mae": float(mae), "rmse": float(rmse), "mape": float(mape)}
+    errors = np.abs((y_true - y_pred) / denom) * 100.0
+    return {"mae": float(mae), "rmse": float(rmse), "mape": float(np.mean(errors)), "median_ape": float(np.median(errors))}
 
 
 def chronological_split(dataset: pd.DataFrame, test_months: int = 2):
-    """Test on the latest feature months of every user; train on all earlier months."""
-    months = sorted(dataset["month"].unique())
-    if len(months) <= test_months + 2:
+    """Hold out each user's own latest ``test_months`` months; train on their earlier ones.
+
+    Users' histories can end at different times (for example one user with
+    newer data), so a single calendar cutoff would test only on whoever has the
+    newest months. Splitting per user tests every user on their latest months.
+    """
+    ordered = dataset.sort_values(["user_id", "month"])
+    position_from_end = ordered.groupby("user_id").cumcount(ascending=False)
+    test = ordered[position_from_end < test_months]
+    train = ordered[position_from_end >= test_months]
+    if train.empty or test.empty or train["month"].nunique() < 2:
         raise ValueError("Not enough months of history for a chronological evaluation split.")
-    cutoff = months[-test_months]
-    return dataset[dataset["month"] < cutoff].copy(), dataset[dataset["month"] >= cutoff].copy()
+    return train.copy(), test.copy()
 
 
 def train_and_evaluate_model(database_path: str | Path | None = None, model_dir: str | Path | None = None):
     """Train the personalised forecaster and compare it with simple baselines on later months."""
-    monthly = build_monthly_expense_data(database_path)
+    monthly, left_out = drop_incomplete_edge_months(build_monthly_expense_data(database_path, include_counts=True))
+    monthly = monthly[["user_id", "month", "total_expense"]]
     dataset = create_forecast_dataset(monthly)
     dataset = dataset[dataset["rolling_3"] > 0]
     if dataset.empty:
@@ -260,6 +301,7 @@ def train_and_evaluate_model(database_path: str | Path | None = None, model_dir:
         "model_weight": MODEL_WEIGHT,
         "ratio_limits": list(RATIO_LIMITS),
         "test_months": [str(m) for m in sorted(test_df["month"].unique())],
+        "incomplete_months_left_out": [f"{row.user_id} {row.month}" for row in left_out.itertuples()],
         "train_rows": int(len(train_df)),
         "test_rows": int(len(test_df)),
         "metrics": ml_metrics if selected == "model" else baseline,
@@ -274,24 +316,27 @@ def train_and_evaluate_model(database_path: str | Path | None = None, model_dir:
     report = [
         "Expense Forecasting Evaluation Report",
         "=" * 40,
-        f"Validation: every user's latest {len(metadata['test_months'])} months held out "
-        f"({', '.join(metadata['test_months'])}); trained on earlier months.",
-        f"Train rows: {len(train_df)}  Test rows: {len(test_df)}",
+        "Validation: each user's own latest 2 forecast months held out; trained on their earlier months.",
+        f"Train rows: {len(train_df)}  Test rows: {len(test_df)}  Users tested: {test_df['user_id'].nunique()}",
+        f"Incomplete months left out (start/end of a user's history): {len(left_out)}",
         "",
     ]
+
+    def block(name, metrics):
+        return [
+            f"{name}:",
+            f"MAE: {metrics['mae']:.4f}",
+            f"RMSE: {metrics['rmse']:.4f}",
+            f"MAPE: {metrics['mape']:.4f}%",
+            f"Median percentage error: {metrics['median_ape']:.4f}%",
+            "",
+        ]
+
     for name, metrics in results.items():
-        report += [f"{name}:", f"MAE: {metrics['mae']:.4f}", f"RMSE: {metrics['rmse']:.4f}", f"MAPE: {metrics['mape']:.4f}%", ""]
+        report += block(name, metrics)
+    report += block("Personalised Random Forest (next month / own 3-month average, blended 50/50 with that average)", ml_metrics)
+    report += block("Machine Learning Model (used by the app)", chosen)
     report += [
-        "Personalised Random Forest (next month / own 3-month average, blended 50/50 with that average):",
-        f"MAE: {ml_metrics['mae']:.4f}",
-        f"RMSE: {ml_metrics['rmse']:.4f}",
-        f"MAPE: {ml_metrics['mape']:.4f}%",
-        "",
-        "Machine Learning Model (used by the app):",
-        f"MAE: {chosen['mae']:.4f}",
-        f"RMSE: {chosen['rmse']:.4f}",
-        f"MAPE: {chosen['mape']:.4f}%",
-        "",
         "Selected: " + ("personalised Random Forest" if selected == "model" else "moving average (beat the model on held-out months)"),
     ]
     (target_dir / "evaluation_report.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
@@ -313,8 +358,11 @@ def main():
     except (FileNotFoundError, ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    metadata = result["metadata"]
+    print(f"Tested on each user's latest 2 months: {metadata['test_rows']} rows, "
+          f"{len(metadata['incomplete_months_left_out'])} incomplete start/end month(s) left out")
     for name, metrics in list(result["results"].items()) + [("Personalised Random Forest", result["ml_metrics"])]:
-        print(f"{name:<52} MAE {metrics['mae']:>12,.0f}  MAPE {metrics['mape']:6.1f}%")
+        print(f"{name:<52} MAE {metrics['mae']:>9,.0f}  MAPE {metrics['mape']:6.1f}%  median error {metrics['median_ape']:5.1f}%")
     print(f"Selected for the app: {result['selected']}")
     return 0
 

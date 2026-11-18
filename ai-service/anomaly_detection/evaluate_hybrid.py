@@ -121,7 +121,18 @@ def evaluate(database_path: str | Path | None = None, model_dir: str | Path | No
             caught = predicted.loc[group.index]
             by_type[str(anomaly_type)] = {"recall": float(caught.mean()), "count": int(len(group))}
         results[name] = {**overall, "recall_by_type": by_type}
+
+    # Which history check raises how many alerts, and how many of them match a label.
+    labelled = set(labels.loc[actual, "transaction_id"].astype(str))
+    signals: dict[str, dict[str, int]] = {}
+    for tid, flag in flags.items():
+        for signal in flag.get("signals", []):
+            entry = signals.setdefault(signal, {"flags": 0, "labelled": 0, "alone": 0})
+            entry["flags"] += 1
+            entry["labelled"] += tid in labelled
+            entry["alone"] += set(flag["signals"]) <= {signal, "model"}
     return {
+        "signals": signals,
         "training_end": training_end,
         "evaluated_rows": int(len(labels)),
         "labelled_anomalies": int(actual.sum()),
@@ -145,6 +156,11 @@ def format_report(summary: dict) -> str:
         lines.append(
             f"{name:42} {values['precision']:9.3f} {values['recall']:7.3f} {values['f1']:6.3f} {values['alert_rate']:7.2%}"
         )
+    lines += ["", "Alerts raised by each check (a flag can have several checks):",
+              f"  {'Check':24} {'Flags':>6} {'Match a label':>14} {'Only check on the flag':>23}"]
+    for signal, item in sorted(summary.get("signals", {}).items(), key=lambda pair: -pair[1]["flags"]):
+        share = item["labelled"] / item["flags"] if item["flags"] else 0
+        lines.append(f"  {signal:24} {item['flags']:6,} {item['labelled']:6,} ({share:5.1%}) {item['alone']:15,}")
     lines += ["", "Recall by stored anomaly type:"]
     for name, values in summary["results"].items():
         lines.append(f"  {name}:")

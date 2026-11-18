@@ -19,7 +19,7 @@ _spec.loader.exec_module(T)
 SEASON = [1.0, .95, 1.02, .98, 1.03, .97, .96, 1.0, .99, 1.08, 1.10, 1.06]
 
 
-def _database(path, users=60, seed=3):
+def _database(path, users=60, seed=3, per_month=1):
     rng = np.random.default_rng(seed)
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE transactions (user_id TEXT, transaction_date TEXT, amount REAL, transaction_type TEXT)")
@@ -28,7 +28,8 @@ def _database(path, users=60, seed=3):
         base = float(np.exp(rng.uniform(np.log(15000), np.log(300000))))
         for month in range(12):
             total = base * SEASON[month] * rng.lognormal(0, 0.12)
-            rows.append((f"U{user:03d}", f"2025-{month + 1:02d}-10", total, "Expense"))
+            for part in range(per_month):
+                rows.append((f"U{user:03d}", f"2025-{month + 1:02d}-{10 + part:02d}", total / per_month, "Expense"))
     connection.executemany("INSERT INTO transactions VALUES (?, ?, ?, ?)", rows)
     connection.commit()
     connection.close()
@@ -118,3 +119,35 @@ def test_forecast_explanation_adds_up_to_the_personalised_forecast(tmp_path, mon
     assert result["prediction"] == pytest.approx(expected)
     assert total == pytest.approx(result["prediction"], rel=1e-6)
     assert 0.6 * last["rolling_3"].iloc[0] <= result["prediction"] <= 1.6 * last["rolling_3"].iloc[0]
+
+
+def test_evaluation_tests_every_user_and_ignores_a_stray_entry(tmp_path):
+    database = tmp_path / "finance.db"
+    _database(database, users=40, per_month=5)
+    connection = sqlite3.connect(database)
+    # One user with newer months (like generated demo data) and a stray test entry after them.
+    connection.executemany(
+        "INSERT INTO transactions VALUES (?, ?, ?, ?)",
+        [("U000", f"2026-{month:02d}-{day:02d}", 12000.0, "Expense") for month in range(1, 7) for day in range(10, 15)] + [("U000", "2026-07-02", 150.0, "Expense")],
+    )
+    connection.commit()
+    connection.close()
+
+    result = T.train_and_evaluate_model(database, tmp_path / "model")
+
+    assert result["metadata"]["test_rows"] == 80  # 2 months for each of the 40 users
+    assert result["metadata"]["incomplete_months_left_out"] == ["U000 2026-07"]
+    assert result["ml_metrics"]["mape"] < 50
+    assert "Median percentage error" in (tmp_path / "model" / "evaluation_report.txt").read_text()
+
+
+def test_quiet_months_in_the_middle_are_kept():
+    monthly = pd.DataFrame({
+        "user_id": ["U1"] * 5,
+        "month": ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05"],
+        "total_expense": [100.0, 5000.0, 300.0, 5000.0, 50.0],
+        "transaction_count": [1, 20, 3, 20, 1],
+    })
+    kept, left_out = T.drop_incomplete_edge_months(monthly)
+    assert list(kept["month"]) == ["2025-02", "2025-03", "2025-04"]
+    assert list(left_out["month"]) == ["2025-01", "2025-05"]

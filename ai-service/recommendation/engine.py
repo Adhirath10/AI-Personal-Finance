@@ -282,6 +282,7 @@ LARGE_PURCHASE_RATIO = 3.0  # this many times the usual purchase in the category
 VERY_LARGE_PURCHASE_RATIO = 5.0
 EXTREME_PURCHASE_RATIO = 8.0
 DUPLICATE_WINDOW_DAYS = 3
+UNUSUAL_SHARE_RATIO = 1.5  # share-of-income check needs at least this × the usual category amount
 MIN_CATEGORY_HISTORY = 5
 MIN_MERCHANT_HISTORY = 20
 
@@ -422,7 +423,10 @@ def _assess_expense(
             + ": possible duplicate charge."
         )
 
-    if typical_income:
+    # A big share of income only matters when the payment is not the user's
+    # normal amount for that category: rent or a SIP can take 30% every month.
+    usual_for_category = ratio is not None and ratio < UNUSUAL_SHARE_RATIO
+    if typical_income and not usual_for_category:
         share = amount / typical_income
         if share >= 0.25:
             points += 2
