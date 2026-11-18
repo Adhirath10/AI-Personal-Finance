@@ -102,6 +102,24 @@ def _load_artifact(path: Path) -> Any:
         return _ARTIFACT_CACHE[key]
 
 
+_FORECAST_TRAINING = None
+
+
+def _forecasting_training_module():
+    """The forecasting training module, loaded once (it holds the shared feature builder)."""
+    global _FORECAST_TRAINING
+    with _ARTIFACT_LOCK:
+        if _FORECAST_TRAINING is None:
+            path = PROJECT_ROOT / "ai-service" / "forecasting" / "train.py"
+            spec = spec_from_file_location("_finai_forecasting_training", path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Unable to load forecasting helpers from {path}.")
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _FORECAST_TRAINING = module
+        return _FORECAST_TRAINING
+
+
 def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
@@ -392,6 +410,8 @@ class RecommendationEngine:
         self.budget_warning_threshold = budget_warning_threshold
         self._categorization_artifacts: tuple[Any, Any] | None = None
         self._forecast_artifacts: tuple[Any, list[str]] | None = None
+        self._forecast_metadata: dict | None = None
+        self._forecast_training = None
         self._forecast_unavailable_reason: str | None = None
         self._anomaly_artifacts: dict | None = None
 
@@ -559,6 +579,8 @@ class RecommendationEngine:
             )
             return None
         self._forecast_artifacts = (model, feature_columns)
+        self._forecast_training = _forecasting_training_module()
+        self._forecast_metadata = self._forecast_training.load_forecast_metadata(self.forecast_model_dir)
         return self._forecast_artifacts
 
     def _forecast_user_expenses(
@@ -620,26 +642,16 @@ class RecommendationEngine:
             }
 
         model, feature_columns = artifacts
-        values = monthly.to_numpy(dtype=float)
         latest_month = analysis_period
-        previous = lambda lag: float(values[-lag - 1]) if len(values) > lag else 0.0
-        previous_month_amount = previous(1)
-        latest_amount = float(values[-1])
-        change = (
-            latest_amount / previous_month_amount - 1
-            if previous_month_amount != 0
-            else 0.0
-        )
-        feature_values: dict[str, float] = {
-            "previous_1": previous(1),
-            "previous_2": previous(2),
-            "previous_3": previous(3),
-            "rolling_3": float(np.mean(values[-3:])),
-            "rolling_6": float(np.mean(values[-6:])),
-            "month_number": float(latest_month.month),
-            "spending_change": float(change) if np.isfinite(change) else 0.0,
-        }
-        missing_features = [name for name in feature_columns if name not in feature_values]
+        training = self._forecast_training
+        # Same feature builder as training, so features cannot drift apart.
+        history = pd.DataFrame({
+            "user_id": "user",
+            "month": [str(period) for period in monthly.index],
+            "total_expense": monthly.to_numpy(dtype=float),
+        })
+        feature_row = training.build_forecast_features(history).tail(1)
+        missing_features = [name for name in feature_columns if name not in feature_row.columns]
         if missing_features:
             LOGGER.warning(
                 "Forecast model requests unsupported features: %s", missing_features
@@ -653,16 +665,8 @@ class RecommendationEngine:
             }
         try:
             forecast = float(
-                model.predict(
-                    pd.DataFrame(
-                        [
-                            {
-                                column: feature_values[column]
-                                for column in feature_columns
-                            }
-                        ],
-                        columns=feature_columns,
-                    )
+                training.predict_expense(
+                    model, self._forecast_metadata, feature_row, feature_columns
                 )[0]
             )
         except (ValueError, TypeError, AttributeError) as exc:

@@ -122,6 +122,20 @@ Copy-Item frontend\.env.example frontend\.env
 npm --prefix frontend run dev
 ```
 
+### Retrain the expense forecast
+
+The forecaster predicts next month relative to each user's own 3-month average
+(blended 50/50 with that average and kept within 0.6x-1.6x of it), so it works
+for low and high spenders alike. Retrain it on your database once:
+
+```bash
+python ai-service/forecasting/train.py
+```
+
+It prints the comparison with the moving-average baselines and the previous
+model, and writes `forecast_metadata.json` and `evaluation_report.txt` next to
+the model. Restart the AI service afterwards.
+
 ### Recent data for a demo
 
 The dataset ends in 2025, so forecasts would be for months that have already

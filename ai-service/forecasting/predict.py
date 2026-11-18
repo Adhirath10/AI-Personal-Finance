@@ -5,7 +5,7 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
-from train import build_forecast_features, build_monthly_expense_data
+from train import build_forecast_features, build_monthly_expense_data, load_forecast_metadata, predict_expense
 
 MIN_HISTORY_MONTHS = 3
 
@@ -41,7 +41,7 @@ def predict_next_month_expense(user_id: str, database_path: str | Path | None = 
 
     model, feature_columns = load_model(model_dir)
     features = last_row[feature_columns].iloc[[0]]
-    predicted = float(model.predict(features)[0])
+    predicted = float(predict_expense(model, load_forecast_metadata(model_dir), last_row, feature_columns)[0])
     forecast_month = pd.Period(last_row["month"].iloc[0], freq="M") + 1
     return str(user_id), forecast_month.strftime("%Y-%m"), predicted
 

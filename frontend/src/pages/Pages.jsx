@@ -657,6 +657,7 @@ function factorValue(model, row) {
   if (model === "forecast") {
     if (FORECAST_MONEY_FEATURES.has(row.feature)) return currency(number);
     if (row.feature === "spending_change") return `${number >= 0 ? "+" : ""}${ratioPercent(number)}`;
+    if (String(row.feature).endsWith("_vs_avg6")) return `${number.toFixed(2)}×`;
     if (row.feature === "month_number") return MONTH_NAMES[Math.round(number) - 1] || String(number);
   }
   if (model === "categorization") return number.toFixed(3);
