@@ -1,6 +1,5 @@
 import { NavLink } from "react-router-dom";
 import {
-  Activity,
   ArrowDownUp,
   BadgeIndianRupee,
   BarChart3,
@@ -31,7 +30,6 @@ const navigation = [
   { label: "Budgets", to: "/budgets", icon: WalletCards, section: "PLANNING" },
   { label: "Financial goals", to: "/goals", icon: Goal },
   { label: "What-if simulator", to: "/simulator", icon: Crosshair },
-  { label: "Explainable AI", to: "/explainability", icon: Activity, section: "INTELLIGENCE" },
 ];
 
 export default function Sidebar({ open, onClose, collapsed, onCollapse, recommendationCount = 0, profile = {}, onWorkspace, onHelp }) {

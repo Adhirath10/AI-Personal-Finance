@@ -412,7 +412,7 @@ export function ForecastPage({ data, mode, onRunModel, navigate }) {
   const drivers = explanationRows("forecast", explanation?.feature_contributions || []);
   const driverImportance = explanationRows("forecast", (explanation?.feature_importance || []).map((item) => ({ ...item, shap_value: Math.abs(item.importance ?? 0) })))
     .map((item) => ({ feature: item.label, importance: item.shap_value }));
-  return <div className="page-stack"><PageHeading eyebrow="Predictive finance" title="Expense forecasting" description="The AI predicts your total spending for the coming month from your recent months." actions={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Updating..." : forecast ? "Update forecast" : "Run forecast"}</Button>} />{!forecast && data.modelLoading?.forecast ? <AiLoading text="Predicting next month’s spending…" /> : usable ? <>{forecast.is_historical ? <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{forecast.notice || `Recorded history ends in ${forecast.history_end_month}, so the forecast month ${forecast.forecast_month} has already passed.`}</span></div> : <div className="info-strip"><CircleAlert size={16} /><span>Forecast for the month after your latest recorded expenses ({forecast.history_end_month || forecast.analysis_period?.selected_month}).</span></div>}<div className="forecast-hero"><div className="forecast-main"><div className="forecast-kicker"><Sparkles size={15} />FORECAST <TooltipNote>Predicted by a Random Forest model trained on monthly spending patterns.</TooltipNote></div><strong>{currency(forecast.predicted_expense)}</strong><span>Predicted spending for {monthTitle(forecast.forecast_month)}</span>{forecast.is_historical ? <StatusBadge tone="warning">Based on older records</StatusBadge> : <StatusBadge tone="success">Live forecast</StatusBadge>}</div><div className="forecast-metrics"><MiniMetric icon={Activity} label="Typical error" value={forecast.mae == null ? "—" : `± ${currency(forecast.mae)}`} /><MiniMetric icon={Activity} label="Usually within" value={forecast.mape == null ? "—" : `± ${Math.round(Number(forecast.mape))}%`} /><MiniMetric icon={Activity} label="Based on" value={forecast.history_months ? `${forecast.history_months} months` : "—"} /></div></div><ChartCard title="Your monthly spending" subtitle="Recorded months up to the one selected at the top"><div className="chart-area chart-area-tall"><SpendingLineChart data={data.monthly || []} /></div></ChartCard>{driverImportance.length ? <ChartCard title="What drives this forecast?" subtitle="Average influence of each factor"><FeatureImportanceChart data={driverImportance} valueFormatter={(value) => currency(value)} /></ChartCard> : <EmptyState title={explanation?.status && explanation.status !== "available" ? "Explanation unavailable" : "Why this amount?"} description={explanation?.reason || "See which parts of your recent spending pushed this prediction up or down."} action={<div className="heading-actions"><Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={() => onRunModel("explainability", { model: "forecast" }, "Forecast explanation")}>{data.modelLoading?.explainability ? "Explaining..." : "Explain this forecast"}</Button><Button variant="outline" onClick={() => navigate("/explainability")}>Open Explainable AI</Button></div>} />}{drivers.length > 0 && <FeatureTable rows={drivers} model="forecast" title="This prediction explained" />}</> : <EmptyState title={forecast?.status === "insufficient_history" ? "Not enough history to forecast" : forecast?.status === "unavailable" ? "Forecast unavailable" : "Forecast not loaded yet"} description={forecast?.reason || forecast?.skip_reason || data.forecastError || "Predict next month’s spending from your recent months."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Checking..." : "Check forecast status"}</Button>} />}</div>;
+  return <div className="page-stack"><PageHeading eyebrow="Predictive finance" title="Expense forecasting" description="The AI predicts your total spending for the coming month from your recent months." actions={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Updating..." : forecast ? "Update forecast" : "Run forecast"}</Button>} />{!forecast && data.modelLoading?.forecast ? <AiLoading text="Predicting next month’s spending…" /> : usable ? <>{forecast.is_historical ? <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{forecast.notice || `Recorded history ends in ${forecast.history_end_month}, so the forecast month ${forecast.forecast_month} has already passed.`}</span></div> : <div className="info-strip"><CircleAlert size={16} /><span>Forecast for the month after your latest recorded expenses ({forecast.history_end_month || forecast.analysis_period?.selected_month}).</span></div>}<div className="forecast-hero"><div className="forecast-main"><div className="forecast-kicker"><Sparkles size={15} />FORECAST <TooltipNote>Predicted by a Random Forest model trained on monthly spending patterns.</TooltipNote></div><strong>{currency(forecast.predicted_expense)}</strong><span>Predicted spending for {monthTitle(forecast.forecast_month)}</span>{forecast.is_historical ? <StatusBadge tone="warning">Based on older records</StatusBadge> : <StatusBadge tone="success">Live forecast</StatusBadge>}</div><div className="forecast-metrics"><MiniMetric icon={Activity} label="Typical error" value={forecast.mae == null ? "—" : `± ${currency(forecast.mae)}`} /><MiniMetric icon={Activity} label="Usually within" value={forecast.mape == null ? "—" : `± ${Math.round(Number(forecast.mape))}%`} /><MiniMetric icon={Activity} label="Based on" value={forecast.history_months ? `${forecast.history_months} months` : "—"} /></div></div><ChartCard title="Your monthly spending" subtitle="Recorded months up to the one selected at the top"><div className="chart-area chart-area-tall"><SpendingLineChart data={data.monthly || []} /></div></ChartCard>{driverImportance.length ? <ChartCard title="What drives this forecast?" subtitle="Average influence of each factor"><FeatureImportanceChart data={driverImportance} valueFormatter={(value) => currency(value)} /></ChartCard> : <EmptyState title={explanation?.status && explanation.status !== "available" ? "Explanation unavailable" : "Why this amount?"} description={explanation?.reason || "See which parts of your recent spending pushed this prediction up or down."} action={<div className="heading-actions"><Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={() => onRunModel("explainability", { model: "forecast" }, "Forecast explanation")}>{data.modelLoading?.explainability ? "Explaining..." : "Explain this forecast"}</Button></div>} />}{drivers.length > 0 && <FeatureTable rows={drivers} model="forecast" title="This prediction explained" />}</> : <EmptyState title={forecast?.status === "insufficient_history" ? "Not enough history to forecast" : forecast?.status === "unavailable" ? "Forecast unavailable" : "Forecast not loaded yet"} description={forecast?.reason || forecast?.skip_reason || data.forecastError || "Predict next month’s spending from your recent months."} action={<Button icon={Sparkles} disabled={mode !== "live" || data.modelLoading?.forecast} onClick={() => onRunModel("forecast", {}, "Expense forecast")}>{data.modelLoading?.forecast ? "Checking..." : "Check forecast status"}</Button>} />}</div>;
 }
 
 const REVIEWED_KEY = "finai-reviewed-anomalies";
@@ -461,10 +461,6 @@ export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
     ? items.filter((item) => reviewed.has(item.transaction_id || item.id)).length
     : items.filter((item) => !reviewed.has(item.transaction_id || item.id) && (key === "important" ? item.severity !== "Low" : item.severity === key)).length;
   const analyze = () => onRunModel("anomalies", {}, "Anomaly detection");
-  const explain = (item) => {
-    navigate("/explainability", { state: { model: "anomaly" } });
-    onRunModel("explainability", { model: "anomaly", transaction_id: item.transaction_id || item.id }, "Anomaly explanation");
-  };
 
   return <div className="page-stack">
     <PageHeading eyebrow={month ? monthTitle(month) : "Transaction safety"} title="Anomaly detection" description="Transactions that don’t fit your usual spending, with the reasons why." actions={<Button icon={ShieldAlert} disabled={mode !== "live" || data.modelLoading?.anomalies} onClick={analyze}>{data.modelLoading?.anomalies ? "Analyzing..." : result ? "Re-check" : "Analyze transactions"}</Button>} />
@@ -493,7 +489,6 @@ export function AnomaliesPage({ data, mode, onRunModel, navigate }) {
           <div className="anomaly-actions">
             <span className="anomaly-score">{item.model_flag ? `Model score ${Number(item.anomaly_score).toFixed(3)}` : "Model saw a normal pattern; caught by the checks above"}</span>
             <button className="text-button" onClick={() => navigate("/transactions", { state: { search: item.merchant || item.description || "" } })}>View in transactions</button>
-            <button className="text-button" disabled={mode !== "live"} onClick={() => explain(item)}>Why was this flagged? <ArrowRight size={13} /></button>
             <button className={`button ${isReviewed ? "button-outline" : "button-primary"} button-small`} onClick={() => toggleReviewed(id)}>{isReviewed ? "Undo review" : <><Check size={14} />Mark reviewed</>}</button>
           </div>
         </article>;
@@ -601,62 +596,6 @@ function FeatureTable({ rows, title, model = "forecast" }) {
   return <ChartCard title={title} subtitle="Each factor’s value and how much it moved the result"><div className="table-scroll"><table className="data-table"><thead><tr><th>Factor</th><th>Value</th><th className="align-right">Effect</th></tr></thead><tbody>{rows.map((row, index) => { const effect = Number(row.shap_value); return <tr key={`${row.label || row.feature}-${index}`}><td><strong>{row.label || featureLabel(row.feature)}</strong></td><td>{factorValue(model, row)}</td><td className={`align-right ${effect >= 0 ? "income-text" : "expense-text"}`}>{effectText(model, effect)}</td></tr>; })}</tbody></table></div></ChartCard>;
 }
 
-function WaterfallChart({ rows, baseValue, predictionValue, format = (value) => Number(value).toFixed(3), effect = (value) => `${value >= 0 ? "+" : ""}${Number(value).toFixed(3)}` }) {
-  const base = Number(baseValue);
-  const contributions = rows
-    .filter((row) => Number.isFinite(Number(row.shap_value)))
-    .sort((left, right) => Math.abs(Number(right.shap_value)) - Math.abs(Number(left.shap_value)));
-  let running = base;
-  const steps = contributions.map((row) => {
-    const start = running;
-    running += Number(row.shap_value);
-    return { ...row, start, end: running };
-  });
-  const output = Number.isFinite(Number(predictionValue)) ? Number(predictionValue) : running;
-  const bounds = [base, output, ...steps.flatMap((step) => [step.start, step.end])];
-  const minimum = Math.min(...bounds);
-  const span = Math.max(Math.max(...bounds) - minimum, 1e-9);
-  return (
-    <div className="shap-waterfall">
-      <div className="waterfall-summary"><span>Starting point <strong>{format(base)}</strong></span><span>Result <strong>{format(output)}</strong></span></div>
-      <div className="waterfall-list">
-        {steps.map((step, index) => {
-          const delta = Number(step.shap_value);
-          const left = (Math.min(step.start, step.end) - minimum) / span * 100;
-          const width = Math.max(Math.abs(delta) / span * 100, delta === 0 ? 0 : 0.6);
-          const baseline = (base - minimum) / span * 100;
-          return (
-            <div className="waterfall-row" key={`${step.feature}-${index}`}>
-              <span className="waterfall-feature" title={step.label || step.feature}>{step.label || step.feature}</span>
-              <div className="waterfall-track">
-                <i className="waterfall-baseline" style={{ left: `${baseline}%` }} />
-                <i className={`waterfall-bar ${delta >= 0 ? "positive" : "negative"}`} style={{ left: `${left}%`, width: `${width}%` }} />
-              </div>
-              <strong className="waterfall-value">{effect(delta)}</strong>
-              <span className="sr-only">{delta >= 0 ? "increases" : "decreases"} the result</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-const EXPLAIN_MODELS = {
-  forecast: {
-    label: "Expense forecast",
-    intro: "Why the AI predicts this spending: each factor pushed the prediction up or down from a typical starting point.",
-  },
-  categorization: {
-    label: "Transaction category",
-    intro: "Which words in a transaction made the AI pick its category.",
-  },
-  anomaly: {
-    label: "Unusual transaction",
-    intro: "What made a transaction look unusual, or normal, to the anomaly model.",
-  },
-};
-
 // The categorization explainer combines every word missing from the text into one row.
 const ABSENT_TERMS = "__absent__";
 
@@ -696,62 +635,7 @@ function factorValue(model, row) {
   return Number.isInteger(number) ? String(number) : number.toFixed(2);
 }
 
-function summarySentence(model, row, result) {
-  const amount = effectText(model, row.shap_value).slice(1);
-  if (model === "forecast") return `${row.label} ${row.shap_value >= 0 ? "raised" : "lowered"} the forecast by ${amount}.`;
-  if (model === "categorization" && row.feature === ABSENT_TERMS) return `Words that usually signal other categories are missing, which ${row.shap_value >= 0 ? "pointed towards" : "pointed away from"} ${result.prediction_label}.`;
-  if (model === "categorization") return `The word ${row.label} ${row.shap_value >= 0 ? "pointed towards" : "pointed away from"} ${result.prediction_label}.`;
-  return `${row.label} made it look ${row.shap_value >= 0 ? "more" : "less"} unusual.`;
-}
 
-export function ExplainabilityPage({ data, mode, onRunModel }) {
-  const location = useLocation();
-  const explanation = data.explainability;
-  const [selected, setSelected] = useState(() => location.state?.model || "forecast");
-  const result = explanation?.[selected];
-  const ready = result?.status === "available";
-  const rows = explanationRows(selected, result?.feature_contributions || result?.individual || []);
-  const importance = explanationRows(selected, (result?.feature_importance || result?.global_importance || []).map((item) => ({ ...item, shap_value: Math.abs(item.importance ?? item.value ?? item.mean_absolute_shap ?? 0) })))
-    .map((item) => ({ feature: item.label, importance: item.shap_value }));
-  const info = EXPLAIN_MODELS[selected];
-  const requestExplanation = () => {
-    const transaction = selected === "categorization"
-      ? data.recentTransactions?.[0]
-      : selected === "anomaly"
-        ? data.anomalies?.items?.[0]
-        : null;
-    onRunModel("explainability", {
-      model: selected,
-      transaction_id: transaction?.transaction_id || transaction?.id,
-      description: transaction?.description,
-      merchant: transaction?.merchant,
-    }, "Explanation");
-  };
-  const isMoney = selected === "forecast";
-  const outcome = selected === "forecast"
-    ? result?.prediction != null && `Predicted spending for ${monthTitle(result.forecast_month)}: ${currency(result.prediction)}`
-    : selected === "categorization"
-      ? result?.prediction_label && `Chosen category: ${result.prediction_label}${result.confidence != null ? ` (${Math.round(result.confidence * 100)}% sure)` : ""}`
-      : result?.prediction_label && `Model verdict: ${result.prediction_label}`;
-
-  return <div className="page-stack">
-    <PageHeading eyebrow="Why did the AI decide this?" title="Explainable AI" description={info.intro} actions={<div className="heading-actions"><select className="select-button" aria-label="What to explain" value={selected} onChange={(event) => setSelected(event.target.value)}>{Object.entries(EXPLAIN_MODELS).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}</select><Button variant="outline" icon={RefreshCw} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={requestExplanation}>{data.modelLoading?.explainability ? "Explaining..." : "Explain"}</Button></div>} />
-    {ready ? <>
-      {result.is_historical && result.notice && <div className="info-strip info-warning" role="status"><CircleAlert size={16} /><span>{result.notice}</span></div>}
-      {rows.length > 0 && <section className="panel xai-summary">
-        <div className="xai-summary-head"><span className="insight-symbol"><BrainCircuit size={18} /></span><div><h2>What the AI decided</h2>{outcome && <p className="xai-outcome">{outcome}</p>}</div></div>
-        <ol className="xai-reasons">{rows.slice(0, 3).map((row) => <li key={row.label} className={row.shap_value >= 0 ? "up" : "down"}>{summarySentence(selected, row, result)}</li>)}</ol>
-        <small>These show how the model reached its answer from your data; they are not proof of cause{selected === "anomaly" ? " or of fraud" : ""}.</small>
-      </section>}
-      {rows.length > 0 && result.base_value != null && Number.isFinite(Number(result.base_value)) && <ChartCard title="Step by step" subtitle={isMoney ? "From a typical starting prediction to yours" : "From the model's starting score to this result"}><WaterfallChart rows={rows} baseValue={result.base_value} predictionValue={result.prediction_value ?? result.prediction ?? result.anomaly_score} format={(value) => isMoney ? currency(value) : Number(value).toFixed(3)} effect={(value) => effectText(selected, value)} /></ChartCard>}
-      <div className="explainability-grid">
-        <ChartCard title="What matters most overall" subtitle="Average influence across your data">{importance.length ? <FeatureImportanceChart data={importance} valueFormatter={(value) => isMoney ? currency(value) : Number(value).toFixed(3)} /> : <EmptyState title="Shown for single predictions only" description="This explanation covers one transaction; see the factors on the right." />}</ChartCard>
-        <ChartCard title="This prediction" subtitle={result.prediction_label || (result.forecast_month ? monthTitle(result.forecast_month) : "Single result")}>{rows.length ? <div className="contribution-list">{rows.slice(0, 8).map((row) => { const max = Math.max(...rows.map((item) => Math.abs(item.shap_value)), 1e-9); return <div className="contribution-row" key={row.label}><span title={row.feature}>{row.label}</span><div className="contribution-track"><i className={row.shap_value >= 0 ? "positive" : "negative"} style={{ width: `${Math.max(6, Math.abs(row.shap_value) / max * 100)}%` }} /></div><strong className={row.shap_value >= 0 ? "income-text" : "expense-text"}>{effectText(selected, row.shap_value)}</strong></div>; })}</div> : <EmptyState title="No single-prediction factors" description="Choose another model or request the explanation again." />}</ChartCard>
-      </div>
-      {rows.length > 0 && <FeatureTable rows={rows} model={selected} title="All factors" />}
-    </> : <EmptyState title={result?.status === "unavailable" ? "Explanation unavailable" : `Explain the ${info.label.toLowerCase()}`} description={result?.reason || data.explainabilityError || info.intro} action={<Button icon={BrainCircuit} disabled={mode !== "live" || data.modelLoading?.explainability} onClick={requestExplanation}>{data.modelLoading?.explainability ? "Explaining..." : "Explain"}</Button>} />}
-  </div>;
-}
 
 export function SettingsPage({ settings = {}, mode, theme, onTheme, onSave, toast, onReset }) {
   const [name, setName] = useState(settings.name || "");

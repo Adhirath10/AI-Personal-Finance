@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   AnomaliesPage,
   BudgetsPage,
-  ExplainabilityPage,
   ForecastPage,
   GoalsPage,
   InsightsPage,
@@ -596,7 +595,7 @@ export default function App() {
                 <Route path="/budgets" element={<BudgetsPage data={currentData} mode={mode} onSave={saveResource} onDelete={handleDelete} />} />
                 <Route path="/goals" element={<GoalsPage data={currentData} mode={mode} onSave={saveResource} onDelete={handleDelete} />} />
                 <Route path="/simulator" element={<SimulatorPage data={currentData} mode={mode} onSave={saveResource} toast={notify} />} />
-                <Route path="/explainability" element={<ExplainabilityPage data={currentData} mode={mode} onRunModel={executeModel} />} />
+                <Route path="/explainability" element={<Navigate to="/" replace />} />
                 <Route path="/settings" element={<SettingsPage data={currentData} settings={settings} mode={mode} theme={theme} onTheme={themeToggle} onSave={saveResource} toast={notify} onReset={() => { setSettings({}); setTheme("light"); }} />} />
                 <Route path="*" element={<EmptyState title="Page not found" description="This FinAI page doesn’t exist." action={<button className="button button-primary" onClick={() => navigate("/")}>Go to overview</button>} />} />
               </Routes>
