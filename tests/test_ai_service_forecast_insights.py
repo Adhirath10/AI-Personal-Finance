@@ -256,3 +256,17 @@ def test_forecast_for_the_current_month_is_not_historical(service):
     assert body["status"] == "available"
     assert body["forecast_month"] == "2026-01"
     assert body["is_historical"] is False
+
+
+def test_insight_text_leads_with_rupees_and_uses_times_for_big_jumps():
+    row = {"category": "Education", "historical_months_compared": 3}
+    big = api._insight_item(1, row, 4305.0, 716.0, "October 2026", 60000.0)
+    assert big["title"] == "Education spending is up"
+    assert big["description"] == "You spent ₹4,305 on Education in October 2026: ₹3,589 more than usual (about 6.0× your usual ₹716)."
+    assert big["priority"] == "Medium"  # ₹3,589 is under 10% of the month's ₹60,000
+    small = api._insight_item(2, row, 900.0, 1000.0, "October 2026", 60000.0)
+    assert small["description"].endswith("₹100 less than usual (10% below your usual ₹1,000).")
+    assert small["priority"] == "Low"
+    rent = api._insight_item(3, {"category": "Rent", "historical_months_compared": 3}, 30000.0, 20000.0, "October 2026", 60000.0)
+    assert rent["priority"] == "High"
+    assert api._rupees(125000) == "₹1,25,000"

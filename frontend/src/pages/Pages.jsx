@@ -391,17 +391,28 @@ function insightChange(item) {
   return Number.isFinite(latest) && Number.isFinite(average) && average ? (latest - average) / Math.abs(average) : null;
 }
 
+// Lead with rupees: a percentage of a small usual amount (₹716 → ₹4,305 is
+// +501%) looks alarming, so big jumps are shown as "6.0× usual" instead.
 function insightChangeLabel(item) {
   const change = insightChange(item);
   if (change == null) return "";
   if (Math.abs(change) < 0.005) return "No change";
-  return `${change >= 0 ? "+" : "−"}${ratioPercent(Math.abs(change))}`;
+  const values = item.supporting_values;
+  const difference = Number(values.latest_month_spending) - Number(values.historical_monthly_average);
+  return `${difference >= 0 ? "+" : "−"}${currency(Math.abs(difference))}`;
+}
+
+function insightChangeDetail(item) {
+  const change = insightChange(item);
+  if (change == null || Math.abs(change) < 0.005) return "";
+  if (change >= 1) return `${(change + 1).toFixed(1)}× usual`;
+  return `${change >= 0 ? "+" : "−"}${ratioPercent(Math.abs(change))} vs usual`;
 }
 
 function InsightCard({ item }) {
   const change = insightChange(item);
   const direction = change == null || Math.abs(change) < 0.005 ? "flat" : change > 0 ? "up" : "down";
-  return <article className={`panel insight-card insight-${direction}`}><div className="insight-card-top"><div className="insight-symbol"><Sparkles size={18} /></div>{change != null && <span className={`insight-change ${direction}`}>{direction === "up" ? <TrendingUp size={15} /> : direction === "down" ? <TrendingDown size={15} /> : null}{insightChangeLabel(item)}</span>}</div><StatusBadge tone={item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success"}>{item.priority || "Insight"}</StatusBadge><h3>{item.title}</h3><p>{humanizeMonths(item.description)}</p>{item.supporting_values?.latest_month_spending != null && <div className="insight-compare"><span>This month <strong>{currency(item.supporting_values.latest_month_spending)}</strong></span><span>Usual month <strong>{currency(item.supporting_values.historical_monthly_average)}</strong></span></div>}</article>;
+  return <article className={`panel insight-card insight-${direction}`}><div className="insight-card-top"><div className="insight-symbol"><Sparkles size={18} /></div>{change != null && <span className={`insight-change ${direction}`}>{direction === "up" ? <TrendingUp size={15} /> : direction === "down" ? <TrendingDown size={15} /> : null}<span className="insight-change-text">{insightChangeLabel(item)}<small>{insightChangeDetail(item)}</small></span></span>}</div><StatusBadge tone={item.priority === "High" ? "danger" : item.priority === "Medium" ? "warning" : "success"}>{item.priority || "Insight"}</StatusBadge><h3>{item.title}</h3><p>{humanizeMonths(item.description)}</p>{item.supporting_values?.latest_month_spending != null && <div className="insight-compare"><span>This month <strong>{currency(item.supporting_values.latest_month_spending)}</strong></span><span>Usual month <strong>{currency(item.supporting_values.historical_monthly_average)}</strong></span></div>}</article>;
 }
 
 export function ForecastPage({ data, mode, onRunModel, navigate }) {

@@ -397,6 +397,66 @@ def recommendations(
         return _unavailable(exc, items=[])
 
 
+def _rupees(amount: float) -> str:
+    """Rupees with Indian digit grouping, e.g. 125000 -> ₹1,25,000."""
+    digits = str(int(round(abs(amount))))
+    if len(digits) > 3:
+        head, tail = digits[:-3], digits[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        digits = ",".join(([head] if head else []) + groups + [tail])
+    return f"₹{digits}"
+
+
+def _insight_item(number, row, latest, average, month_label, month_expense) -> dict[str, Any]:
+    """One category comparison, worded in rupees.
+
+    A percentage alone misleads when the usual amount is small (₹716 to ₹4,305
+    is +501%), so the text leads with the rupee difference and uses "times
+    your usual" for big jumps. Priority depends on how much money moved,
+    compared with the whole month's spending, not on the percentage.
+    """
+    category = row["category"]
+    difference = latest - average
+    ratio = latest / average
+    if abs(difference) < 1:
+        title = f"{category} spending is about the same"
+        description = f"You spent {_rupees(latest)} on {category} in {month_label}, the same as a usual month."
+    else:
+        more = difference > 0
+        title = f"{category} spending is {'up' if more else 'down'}"
+        size = (
+            f"about {ratio:.1f}× your usual {_rupees(average)}"
+            if ratio >= 2
+            else f"{abs(difference) / average:.0%} {'above' if more else 'below'} your usual {_rupees(average)}"
+        )
+        description = (
+            f"You spent {_rupees(latest)} on {category} in {month_label}: "
+            f"{_rupees(abs(difference))} {'more' if more else 'less'} than usual ({size})."
+        )
+    share_of_month = difference / month_expense if month_expense else 0
+    if difference > 0 and share_of_month >= 0.10:
+        priority = "High"
+    elif difference >= 500 and difference / average > 0.20:
+        priority = "Medium"
+    else:
+        priority = "Low"
+    return {
+        "id": f"category-{number}",
+        "title": title,
+        "description": description,
+        "priority": priority,
+        "supporting_values": {
+            "category": category,
+            "latest_month_spending": latest,
+            "historical_monthly_average": average,
+            "historical_months_compared": row["historical_months_compared"],
+        },
+    }
+
+
 @app.get("/api/insights")
 def insights(
     user_id: str = Query(min_length=1, max_length=100),
@@ -412,30 +472,15 @@ def insights(
             include_anomalies=False,
         )
         items = []
+        month_label = pd.Period(analysis["analysis_month"], freq="M").strftime("%B %Y")
+        month_expense = float(analysis["analysis_month_totals"].get("expense") or 0)
         for row in analysis["category_trends"]:
             average = row.get("historical_average_category_spending")
             latest = row.get("latest_category_spending")
             if average is None or not average:
                 continue
-            change = (latest - average) / abs(average) * 100
             items.append(
-                {
-                    "id": f"category-{len(items) + 1}",
-                    "title": f"{row['category']} spending changed",
-                    "description": (
-                        f"Recorded {row['category']} expenses for "
-                        f"{analysis['analysis_month']} were "
-                        f"{abs(change):.1f}% {'higher' if change >= 0 else 'lower'} "
-                        "than the observed prior-month average."
-                    ),
-                    "priority": "Medium" if change > 20 else "Low",
-                    "supporting_values": {
-                        "category": row["category"],
-                        "latest_month_spending": latest,
-                        "historical_monthly_average": average,
-                        "historical_months_compared": row["historical_months_compared"],
-                    },
-                }
+                _insight_item(len(items) + 1, row, latest, average, month_label, month_expense)
             )
         items.sort(
             key=lambda item: abs(
