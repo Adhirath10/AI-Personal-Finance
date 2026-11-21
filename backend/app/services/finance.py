@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
@@ -139,7 +140,8 @@ def _month_before(month: str) -> str:
     return f"{year:04d}-{month_number - 1:02d}"
 
 
-def _period_totals(db: Session, user_id: str, month: str) -> dict:
+def _period_totals(db: Session, user_id: str, month: str, through_day: int = 31) -> dict:
+    """Income and expenses of ``month``, optionally only up to ``through_day``."""
     row = db.execute(
         text(
             """
@@ -148,9 +150,10 @@ def _period_totals(db: Session, user_id: str, month: str) -> dict:
               COALESCE(SUM(CASE WHEN lower(transaction_type) = 'expense' THEN amount ELSE 0 END), 0) AS expenses
             FROM transactions
             WHERE user_id = :user_id AND substr(transaction_date, 1, 7) = :month
+              AND CAST(substr(transaction_date, 9, 2) AS INTEGER) <= :through_day
             """
         ),
-        {"user_id": user_id, "month": month},
+        {"user_id": user_id, "month": month, "through_day": through_day},
     ).mappings().one()
     return {"income": float(row["income"]), "expenses": float(row["expenses"])}
 
@@ -171,7 +174,12 @@ def dashboard_summary(db: Session, user_id: str, month: str | None = None) -> di
 
     month = period["month"]
     totals = _period_totals(db, user_id, month)
-    previous = _period_totals(db, user_id, _month_before(month))
+    # The current month is still in progress: compare with last month up to
+    # the same day, not with all of it.
+    today = date.today()
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    in_progress = month == f"{today:%Y-%m}" and today.day < days_in_month
+    previous = _period_totals(db, user_id, _month_before(month), today.day if in_progress else 31)
     budget_total = db.execute(
         text(
             """
@@ -201,6 +209,11 @@ def dashboard_summary(db: Session, user_id: str, month: str | None = None) -> di
         "incomeChange": change(totals["income"], previous["income"]),
         "expenseChange": change(totals["expenses"], previous["expenses"]),
         "savingsChange": change(savings, previous_savings),
+        "month_progress": (
+            {"in_progress": True, "day": today.day, "days_in_month": days_in_month}
+            if in_progress
+            else {"in_progress": False}
+        ),
     }
 
 

@@ -349,6 +349,7 @@ def test_summary_only_period_does_not_use_later_transaction_data(tmp_path):
             "expense": 500.0,
             "investment_expense": None,
             "discretionary_expense": None,
+            "discretionary_expense_to_day": None,
             "income_source": "monthly_financial_summary",
             "expense_source": "monthly_financial_summary",
         }

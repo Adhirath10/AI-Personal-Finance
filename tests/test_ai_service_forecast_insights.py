@@ -102,7 +102,7 @@ def test_forecast_after_dataset_end_is_returned_as_historical(service):
 
 
 def test_forecast_for_an_upcoming_month_is_not_historical(service):
-    service.use_today(date(2025, 12, 20))
+    service.use_today(date(2026, 1, 5))
 
     body = service.get("/api/forecast", params={"user_id": "U1"}).json()
 
@@ -110,6 +110,34 @@ def test_forecast_for_an_upcoming_month_is_not_historical(service):
     assert body["forecast_month"] == "2026-01"
     assert body["is_historical"] is False
     assert body["notice"] is None
+
+
+def test_month_in_progress_is_forecast_from_complete_months(service):
+    # On 20 December the December total is partial: forecast December itself.
+    service.use_today(date(2025, 12, 20))
+
+    body = service.get("/api/forecast", params={"user_id": "U1"}).json()
+
+    assert body["status"] == "available"
+    assert body["forecast_month"] == "2025-12"
+    assert body["month_in_progress"] is True
+    assert body["history_end_month"] == "2025-11"
+    assert body["predicted_expense"] >= body["spent_so_far"] > 0
+    assert body["is_historical"] is False
+
+
+def test_insights_for_a_month_in_progress_compare_with_the_same_day(service):
+    service.use_today(date(2025, 12, 15))
+
+    body = service.get("/api/insights", params={"user_id": "U1"}).json()
+
+    shopping = next(item for item in body["items"] if "Shopping" in item["title"])
+    values = shopping["supporting_values"]
+    assert values["compared_through_day"] == 15
+    # Earlier Shopping purchases all fell on or before the 15th: by day 15 they were complete.
+    assert values["historical_monthly_average"] == pytest.approx(3000.0)
+    assert "so far in December 2025 (day 15 of 31)" in shopping["description"]
+    assert "by this day" in shopping["description"]
 
 
 def test_forecast_explanation_explains_the_returned_forecast(service):

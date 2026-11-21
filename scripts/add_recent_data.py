@@ -16,7 +16,7 @@ FINANCE_USER_ID from the environment or the project's .env file).
 Examples (run from the project root):
   python scripts/add_recent_data.py --status
   python scripts/add_recent_data.py
-  python scripts/add_recent_data.py --user-id U001 --through 2026-11-17
+  python scripts/add_recent_data.py --user-id U001 --through 2026-10-31   # complete months only
   python scripts/add_recent_data.py --remove
 """
 
@@ -168,8 +168,48 @@ def _profile_income(connection: sqlite3.Connection, user_id: str) -> float | Non
         return None
 
 
+RENT_LATEST_DAY = 5  # rent is paid in the first days of the month
+
+
+def recurring_payment_days(expenses: list[dict]) -> dict[str, int]:
+    """The day of the month each recurring payee is usually paid.
+
+    Real bills arrive on the same date every month; rent at the start of it.
+    """
+    days: dict[str, list[float]] = {}
+    for row in expenses:
+        if row.get("is_recurring"):
+            days.setdefault(str(row["merchant"]).casefold(), []).append(float(_parse_date(row["transaction_date"]).day))
+    fixed = {merchant: int(_median(values) or 1) for merchant, values in days.items()}
+    for row in expenses:
+        if row.get("is_recurring") and str(row.get("category", "")).casefold() == "rent":
+            merchant = str(row["merchant"]).casefold()
+            fixed[merchant] = min(fixed[merchant], RENT_LATEST_DAY)
+    return fixed
+
+
+def _spread_days(rng, rows: list[dict], last_day: int) -> list[int]:
+    """Spread repeated purchases at one merchant evenly over the month.
+
+    Five weekly grocery runs land about a week apart instead of on the same
+    two days; a single purchase keeps a random day.
+    """
+    by_merchant: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        by_merchant.setdefault(str(row.get("merchant")).casefold(), []).append(index)
+    days = [1] * len(rows)
+    for indexes in by_merchant.values():
+        count = len(indexes)
+        offset = rng.uniform(0, last_day / count)
+        for position, index in enumerate(indexes):
+            day = offset + position * last_day / count + rng.uniform(-1.5, 1.5)
+            days[index] = int(min(max(round(day), 1), last_day))
+    return days
+
+
 def _plan_month(rng, month, through, template_rows, salary_template, *, income, spending_target,
-                expense_growth, has_income, highlight_template=None, highlight_amount=0.0):
+                expense_growth, has_income, highlight_template=None, highlight_amount=0.0,
+                payment_days=None):
     """Return [(date, template_row, amount)] for one month that matches the budget plan."""
     last_day = calendar.monthrange(month.year, month.month)[1]
 
@@ -197,7 +237,11 @@ def _plan_month(rng, month, through, template_rows, salary_template, *, income, 
         factor = max(0.5 * spending_target - small, 0.0) / large
         fixed = [_round_to(amount * factor, 500) if amount >= 5000 else amount for amount in fixed]
     fixed_total = sum(fixed)
-    planned += [(on_day(_parse_date(row["transaction_date"]).day), row, amount) for row, amount in zip(recurring, fixed)]
+    payment_days = payment_days or {}
+    planned += [
+        (on_day(payment_days.get(str(row["merchant"]).casefold(), _parse_date(row["transaction_date"]).day)), row, amount)
+        for row, amount in zip(recurring, fixed)
+    ]
 
     # Everyday spending fills the rest of the target: drop or repeat purchases so
     # individual amounts stay close to the user's usual ones. A big one-off purchase
@@ -212,9 +256,8 @@ def _plan_month(rng, month, through, template_rows, salary_template, *, income, 
     while pool and available / total(rows) > 1.25 and len(rows) < 3 * max(1, len(everyday)):
         rows.append({**rng.choice(pool), "_day": rng.randint(1, last_day)})
     scale = available / total(rows) if rows else 0.0
-    for row in rows:
+    for row, day in zip(rows, _spread_days(rng, rows, last_day)):
         amount = max(10.0, float(round(float(row["amount"]) * scale * rng.uniform(0.88, 1.12))))
-        day = row.get("_day") or _parse_date(row["transaction_date"]).day
         planned.append((on_day(day), row, amount))
 
     if highlight_template is not None:
@@ -309,6 +352,7 @@ def add_recent_data(
     history_year = int(expense_months[-1][:4])
     highlight_month = _add_months(last_new, -1) if _add_months(last_new, -1) >= first_new else last_new
 
+    payment_days = recurring_payment_days(expenses)
     plan: dict[str, list] = {}
     month = first_new
     while month <= last_new:
@@ -332,6 +376,7 @@ def add_recent_data(
             expense_growth=EXPENSE_GROWTH_PER_YEAR ** years_ahead,
             has_income=key in income_by_month,
             highlight_template=highlight_template, highlight_amount=highlight_amount,
+            payment_days=payment_days,
         )
         month = _add_months(month, 1)
 
@@ -425,7 +470,7 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--through",
         type=date.fromisoformat,
-        help="Last date to generate (YYYY-MM-DD). Default: the end of last month, so every new month is complete.",
+        help="Last date to generate (YYYY-MM-DD). Default: today, so the current month is filled in up to today.",
     )
     parser.add_argument("--savings-rate", type=float, help="Average share of income saved, e.g. 0.3 for 30%%. Default: from the user's history, kept between 25%% and 45%%.")
     parser.add_argument("--no-highlight", action="store_true", help="Do not add the one unusual electronics purchase (in the month before the latest).")
@@ -472,7 +517,9 @@ def main(argv=None) -> int:
             f"Note: the app shows user {app_user} (FINANCE_USER_ID), not {args.user_id}. "
             f"Run without --user-id, or set FINANCE_USER_ID={args.user_id} in .env.",
         )
-    through = args.through or (_month_start(date.today()) - timedelta(days=1))
+    # Up to today: the current month is filled in as far as today's date
+    # (salary and bills only on days that have passed), like a real account.
+    through = args.through or date.today()
     print(f"Database: {database}")
     print(f"User:     {args.user_id}")
     backup = _backup(database)
@@ -502,7 +549,9 @@ def main(argv=None) -> int:
     for key, totals in summary["totals"].items():
         income, spent = totals["income"], totals["expenses"]
         saved = f"{(income - spent) / income:.0%}" if income else "-"
-        print(f"{key:<9}{'Rs ' + format(round(income), ','):>12}{'Rs ' + format(round(spent), ','):>12}{saved:>8}")
+        in_progress = key == _month_key(through) and through.day < calendar.monthrange(through.year, through.month)[1]
+        note = f"  so far (to {through:%d %b})" if in_progress else ""
+        print(f"{key:<9}{'Rs ' + format(round(income), ','):>12}{'Rs ' + format(round(spent), ','):>12}{saved:>8}{note}")
     print()
     with sqlite3.connect(database) as connection:
         latest, latest_expense, generated, _ = _latest(connection, args.user_id)

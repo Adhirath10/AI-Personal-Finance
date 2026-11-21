@@ -526,6 +526,17 @@ class RecommendationEngine:
             raise ValueError("analysis_month must use YYYY-MM format.")
         return period
 
+    def _month_progress(self, period: pd.Period) -> tuple[float, int, int]:
+        """Share of ``period`` that has passed: (fraction, days so far, days in month).
+
+        Only the current calendar month is in progress; earlier months are complete.
+        """
+        days_in_month = int(period.days_in_month)
+        if period != pd.Period(self.today, freq="M"):
+            return 1.0, days_in_month, days_in_month
+        elapsed = min(self.today.day, days_in_month)
+        return elapsed / days_in_month, elapsed, days_in_month
+
     @staticmethod
     def _is_investment_category(category: object) -> bool:
         normalized = str(category).strip().casefold() if pd.notna(category) else ""
@@ -738,8 +749,23 @@ class RecommendationEngine:
                 "latest_expense_month": str(latest_history_month),
             }
 
+        # While the analysis month is still in progress its total is partial:
+        # forecast that month itself from the complete months before it.
+        progress, days_elapsed, days_in_month = self._month_progress(analysis_period)
+        spent_so_far = None
+        if progress < 1:
+            spent_so_far = float(monthly.iloc[-1])
+            monthly = monthly.iloc[:-1]
+            if len(monthly) < 3:
+                return {
+                    "status": "insufficient_history",
+                    "skip_reason": "At least three complete expense months are required.",
+                    "available_months": int(len(monthly)),
+                    "required_months": 3,
+                }
+
         model, feature_columns = artifacts
-        latest_month = analysis_period
+        latest_month = monthly.index[-1]
         training = self._forecast_training
         # Same feature builder as training, so features cannot drift apart.
         history = pd.DataFrame({
@@ -789,7 +815,19 @@ class RecommendationEngine:
             if not profile.empty
             else None
         )
+        in_progress = {}
+        if spent_so_far is not None:
+            # The month can't end below what is already spent.
+            forecast = max(forecast, spent_so_far)
+            in_progress = {
+                "month_in_progress": True,
+                "spent_so_far": spent_so_far,
+                "days_elapsed": days_elapsed,
+                "days_in_month": days_in_month,
+                "history_end_month": str(latest_month),
+            }
         return {
+            **in_progress,
             "status": "stale" if is_stale else "available",
             "forecast_month": str(forecast_month),
             "predicted_expense": forecast,
@@ -1051,6 +1089,14 @@ class RecommendationEngine:
         transactions["category_for_analysis"] = transactions["analysis_category"]
 
         latest_month = selected_period
+        # A month still in progress is compared with what was spent by the same
+        # day of earlier months (rent and bills paid early are already counted).
+        progress, days_elapsed, days_in_month = self._month_progress(latest_month)
+
+        def by_same_day(rows: pd.DataFrame) -> pd.DataFrame:
+            if progress >= 1:
+                return rows
+            return rows.loc[rows["transaction_date"].dt.day <= days_elapsed]
         monthly_transactions = (
             transactions.groupby(
                 ["month", "transaction_type_normalized"], as_index=False
@@ -1126,6 +1172,11 @@ class RecommendationEngine:
                     if not expense_rows.empty
                     else None
                 ),
+                "discretionary_expense_to_day": (
+                    float(by_same_day(discretionary_rows)["amount"].sum())
+                    if not expense_rows.empty
+                    else None
+                ),
                 "income_source": "transactions"
                 if tx_income is not None
                 else ("monthly_financial_summary" if summary_income is not None else None),
@@ -1177,14 +1228,23 @@ class RecommendationEngine:
                 .sum()
                 .reindex(observed_prior_months, fill_value=0.0)
             )
+            prior_to_day = (
+                by_same_day(prior_category_rows).groupby("month")["amount"]
+                .sum()
+                .reindex(observed_prior_months, fill_value=0.0)
+            )
             category_trends.append(
                 {
                     "category": str(category),
                     "latest_category_spending": float(current_amount),
                     "historical_months_compared": int(len(prior_monthly)),
                     "historical_average_category_spending": (
+                        float(prior_to_day.mean()) if len(prior_monthly) else None
+                    ),
+                    "full_month_average": (
                         float(prior_monthly.mean()) if len(prior_monthly) else None
                     ),
+                    "compared_through_day": days_elapsed if progress < 1 else None,
                 }
             )
 
@@ -1256,6 +1316,9 @@ class RecommendationEngine:
                 ),
                 "data_reaches_current_month": max(available_periods)
                 >= pd.Period(self.today, freq="M"),
+                "month_in_progress": progress < 1,
+                "days_elapsed": days_elapsed,
+                "days_in_month": days_in_month,
             },
             "analysis_month_totals": {
                 "income": latest_income,
@@ -1533,15 +1596,21 @@ class RecommendationEngine:
 
         monthly_totals = analysis["monthly_totals"]
         current_period = pd.Period(month, freq="M")
+        # For a month in progress compare spending by the same day of the month.
+        discretionary_key = (
+            "discretionary_expense_to_day"
+            if (analysis.get("analysis_period") or {}).get("month_in_progress")
+            else "discretionary_expense"
+        )
         latest_discretionary = _number(
-            monthly_totals.get(month, {}).get("discretionary_expense")
+            monthly_totals.get(month, {}).get(discretionary_key)
         )
         historical_discretionary: list[float] = []
         for offset in range(1, 4):
             prior_month = str(current_period - offset)
             prior = monthly_totals.get(prior_month)
             prior_amount = (
-                _number(prior.get("discretionary_expense")) if prior else None
+                _number(prior.get(discretionary_key)) if prior else None
             )
             if prior_amount is not None:
                 historical_discretionary.append(prior_amount)

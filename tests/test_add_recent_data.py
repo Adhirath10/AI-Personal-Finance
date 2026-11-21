@@ -60,8 +60,10 @@ def test_adds_complete_recent_months_and_can_be_rerun_and_removed(tmp_path):
         "WHERE transaction_id LIKE 'DEMO-%' ORDER BY 1"
     )]
     assert months == ["2026-01", "2026-02", "2026-03"]
-    # February has 28 days: the template's 31st is moved to the 28th.
-    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_date = '2026-02-28' AND description = 'Dinner'") >= 1
+    # Every generated date exists (February has 28 days).
+    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND substr(transaction_date, 1, 7) = '2026-02' AND substr(transaction_date, 9, 2) > '28'") == 0
+    # Rent is paid on the same early day every month.
+    assert {row[0] for row in connection.execute("SELECT substr(transaction_date, 9, 2) FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND merchant = 'Landlord'")} == {"03"}
     assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE merchant = 'Croma'") == 1
     assert _count(connection, "SELECT COUNT(*) FROM monthly_budgets WHERE budget_id LIKE 'DEMO-%'") == 3
     assert _count(connection, "SELECT actual_amount > 0 FROM monthly_budgets WHERE budget_id LIKE 'DEMO-%' AND budget_month = '2026-03'") == 1
@@ -125,3 +127,36 @@ def test_a_test_transaction_in_a_later_month_does_not_block_the_gap(tmp_path):
 
     assert summary["months"][0] == "2026-01" and summary["months"][-1] == "2026-10"
     assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_id = 'TXN-TEST'") == 1
+
+
+def test_fills_the_current_month_only_up_to_today(tmp_path):
+    connection = _database(tmp_path / "finance.db")
+
+    add_recent.add_recent_data(connection, "U001", date(2026, 3, 2), highlight=False)
+
+    march = [row[0] for row in connection.execute(
+        "SELECT transaction_date FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND transaction_date >= '2026-03' ORDER BY 1"
+    )]
+    assert march and max(march) <= "2026-03-02"
+    # Salary (1st) has arrived; rent (3rd) has not been paid yet.
+    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND transaction_date LIKE '2026-03-01%' AND merchant = 'Employer'") == 1
+    assert _count(connection, "SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'DEMO-%' AND transaction_date >= '2026-03' AND merchant = 'Landlord'") == 0
+
+
+def test_repeated_purchases_are_spread_through_the_month():
+    import random
+
+    rows = [{"merchant": "BigBasket"}] * 5 + [{"merchant": "Netflix"}]
+    days = add_recent._spread_days(random.Random(1), rows, 30)
+    grocery_days = sorted(days[:5])
+    assert all(later - earlier >= 3 for earlier, later in zip(grocery_days, grocery_days[1:]))
+    assert all(1 <= day <= 30 for day in days)
+
+
+def test_rent_day_is_early_in_the_month():
+    expenses = [
+        {"merchant": "Landlord", "category": "Rent", "is_recurring": 1, "transaction_date": f"2025-{month:02d}-{day:02d}"}
+        for month, day in ((1, 20), (2, 24), (3, 22))
+    ] + [{"merchant": "Tata Power", "category": "Bills", "is_recurring": 1, "transaction_date": f"2025-0{month}-13"} for month in (1, 2, 3)]
+    days = add_recent.recurring_payment_days(expenses)
+    assert days == {"landlord": add_recent.RENT_LATEST_DAY, "tata power": 13}

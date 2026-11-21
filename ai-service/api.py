@@ -187,7 +187,8 @@ def _forecast_payload(analysis: dict[str, Any]) -> dict[str, Any]:
     status = result.get("status")
     if status in {"available", "stale"}:
         is_historical = status == "stale"
-        history_end = analysis["analysis_period"]["selected_month"]
+        # For a month in progress the forecast uses the complete months before it.
+        history_end = result.get("history_end_month") or analysis["analysis_period"]["selected_month"]
         result["status"] = "available"
         result["is_historical"] = is_historical
         result["history_end_month"] = history_end
@@ -410,7 +411,7 @@ def _rupees(amount: float) -> str:
     return f"₹{digits}"
 
 
-def _insight_item(number, row, latest, average, month_label, month_expense) -> dict[str, Any]:
+def _insight_item(number, row, latest, average, month_label, month_expense, period=None) -> dict[str, Any]:
     """One category comparison, worded in rupees.
 
     A percentage alone misleads when the usual amount is small (₹716 to ₹4,305
@@ -421,21 +422,27 @@ def _insight_item(number, row, latest, average, month_label, month_expense) -> d
     category = row["category"]
     difference = latest - average
     ratio = latest / average
+    through_day = row.get("compared_through_day")
+    if through_day:
+        # Month in progress: "usual" means usual spending by this day of the month.
+        days = (period or {}).get("days_in_month")
+        spent = f"You have spent {_rupees(latest)} on {category} so far in {month_label} (day {through_day}{f' of {days}' if days else ''})"
+        usual = f"usual {_rupees(average)} by this day"
+    else:
+        spent = f"You spent {_rupees(latest)} on {category} in {month_label}"
+        usual = f"usual {_rupees(average)}"
     if abs(difference) < 1:
         title = f"{category} spending is about the same"
-        description = f"You spent {_rupees(latest)} on {category} in {month_label}, the same as a usual month."
+        description = f"{spent}, the same as usual."
     else:
         more = difference > 0
-        title = f"{category} spending is {'up' if more else 'down'}"
+        title = f"{category} spending is {'up' if more else 'down'}{' so far' if through_day else ''}"
         size = (
-            f"about {ratio:.1f}× your usual {_rupees(average)}"
+            f"about {ratio:.1f}× your {usual}"
             if ratio >= 2
-            else f"{abs(difference) / average:.0%} {'above' if more else 'below'} your usual {_rupees(average)}"
+            else f"{abs(difference) / average:.0%} {'above' if more else 'below'} your {usual}"
         )
-        description = (
-            f"You spent {_rupees(latest)} on {category} in {month_label}: "
-            f"{_rupees(abs(difference))} {'more' if more else 'less'} than usual ({size})."
-        )
+        description = f"{spent}: {_rupees(abs(difference))} {'more' if more else 'less'} than usual ({size})."
     share_of_month = difference / month_expense if month_expense else 0
     if difference > 0 and share_of_month >= 0.10:
         priority = "High"
@@ -453,6 +460,7 @@ def _insight_item(number, row, latest, average, month_label, month_expense) -> d
             "latest_month_spending": latest,
             "historical_monthly_average": average,
             "historical_months_compared": row["historical_months_compared"],
+            "compared_through_day": through_day,
         },
     }
 
@@ -472,6 +480,7 @@ def insights(
             include_anomalies=False,
         )
         items = []
+        period = analysis["analysis_period"]
         month_label = pd.Period(analysis["analysis_month"], freq="M").strftime("%B %Y")
         month_expense = float(analysis["analysis_month_totals"].get("expense") or 0)
         for row in analysis["category_trends"]:
@@ -480,7 +489,7 @@ def insights(
             if average is None or not average:
                 continue
             items.append(
-                _insight_item(len(items) + 1, row, latest, average, month_label, month_expense)
+                _insight_item(len(items) + 1, row, latest, average, month_label, month_expense, period)
             )
         items.sort(
             key=lambda item: abs(

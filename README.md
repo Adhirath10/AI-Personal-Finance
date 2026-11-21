@@ -168,9 +168,11 @@ python ai-service/anomaly_detection/evaluate_hybrid.py
 ### Recent data for a demo
 
 The dataset ends in 2025, so forecasts would be for months that have already
-passed. To show current data for one user, generate recent months from that
-user's own history: their merchants and categories, a monthly salary, and
-spending that leaves a realistic 22–38% of income saved (run from the project root):
+passed. To show current data for one user, generate recent months up to today
+from that user's own history: their merchants and categories, a monthly salary,
+rent and bills on the same day every month, everyday purchases spread through
+the month, and spending that leaves a realistic 25–45% of income saved. The
+current month is filled in only up to today (run from the project root):
 
 ```bash
 python scripts/add_recent_data.py
@@ -178,8 +180,10 @@ python scripts/add_recent_data.py
 
 It uses the same database and user as the app (`DATABASE_PATH` and
 `FINANCE_USER_ID` from `.env`); `--status` shows which ones and the user's latest
-month. This adds complete months up to the end of last month, so the forecast is for the
-current month. The script backs up the database to `data/database/backups/`
+month. While the current month is in progress, the overview and AI insights
+compare it with earlier months up to the same day, and the forecast predicts the
+whole current month (showing what has been spent so far). Use
+`--through 2026-10-31` to add complete months only. The script backs up the database to `data/database/backups/`
 first. Generated rows have IDs starting with `DEMO-`. Re-running it replaces
 them, and `--remove` deletes them:
 
